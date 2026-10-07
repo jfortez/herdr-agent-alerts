@@ -84,6 +84,7 @@ All keys live in the `.env` from Setup. Defaults are from `src/config.mjs`; `env
 | `TELEGRAM_BOT_TOKEN` | — (required) | Bot token from BotFather. |
 | `TELEGRAM_CHAT_ID` | — (required) | Numeric chat id that receives the alerts. |
 | `ALHERDR_STATUSES` | `blocked,done` | Statuses that alert. Valid: `idle`, `working`, `blocked`, `done`, `unknown`; unrecognized names are ignored. |
+| `ALHERDR_SILENT_KINDS` | `released,exited` | Kinds sent with Telegram `disable_notification: true`. Valid: `blocked`, `done`, `released`, `exited`; unrecognized names are ignored. Empty makes every kind audible. |
 | `ALHERDR_ALERT_RELEASED` | `1` | Alert when an agent leaves its pane (`released = true`). |
 | `ALHERDR_ALERT_EXITED` | `1` | Alert when the pane's foreground process ends. |
 | `ALHERDR_DIGEST_LINES` | `40` | Lines read from the pane, and upper bound of digest lines. |
@@ -94,6 +95,8 @@ All keys live in the `.env` from Setup. Defaults are from `src/config.mjs`; `env
 | `ALHERDR_DEBUG_DUMP` | empty (off) | Path to append one JSON line per event (raw payload, parsed payload, resolved kind), even for filtered events. |
 
 Booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The plugin also reads Herdr-provided `HERDR_BIN_PATH`, `HERDR_PLUGIN_ROOT`, `HERDR_PLUGIN_CONFIG_DIR`, and `HERDR_PLUGIN_STATE_DIR`; the last one is what the dry-run recipe overrides.
+
+`blocked` and `done` are the interruptions that matter, so they stay audible by default. `released` and `exited` are informational: they are delivered silently with `disable_notification: true`, so they reach the chat without a sound and the buzz keeps meaning something needs you. `send-test` is always audible. Add a kind to `ALHERDR_SILENT_KINDS` to silence it, or leave the key empty to make every alert audible again.
 
 ## What triggers an alert
 
