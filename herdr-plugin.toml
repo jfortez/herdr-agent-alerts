@@ -1,0 +1,46 @@
+id = "alherdr.agent-alerts"
+name = "Agent Alerts"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Alert a detected agent's blocked or done state to Telegram, with a real extract of the agent's own output."
+platforms = ["linux", "macos"]
+
+# One hook covers every agent Herdr detects: pi, claude, codex, and the rest.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["node", "src/notify.mjs"]
+
+# Stop and crash. pane.agent_detected also fires when an agent is DETECTED, so the
+# dispatcher only alerts when the event reports released = true.
+[[events]]
+on = "pane.agent_detected"
+command = ["node", "src/notify.mjs"]
+
+# The pane's foreground process ended: a crash, an exit, or Ctrl-D.
+[[events]]
+on = "pane.exited"
+command = ["node", "src/notify.mjs"]
+
+[[actions]]
+id = "toggle"
+title = "Agent Alerts: toggle alerts"
+contexts = ["global"]
+command = ["node", "src/actions.mjs", "toggle"]
+
+[[actions]]
+id = "enable"
+title = "Agent Alerts: enable alerts"
+contexts = ["global"]
+command = ["node", "src/actions.mjs", "enable"]
+
+[[actions]]
+id = "disable"
+title = "Agent Alerts: disable alerts"
+contexts = ["global"]
+command = ["node", "src/actions.mjs", "disable"]
+
+[[actions]]
+id = "send-test"
+title = "Agent Alerts: send a test alert"
+contexts = ["global"]
+command = ["node", "src/actions.mjs", "send-test"]

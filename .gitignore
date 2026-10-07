@@ -1,0 +1,10 @@
+# Local secrets and machine state never get committed.
+.env
+.env.local
+
+# Plugin runtime state when a development run falls back to the plugin root.
+state/
+
+node_modules/
+*.log
+.DS_Store
