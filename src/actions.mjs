@@ -1,9 +1,9 @@
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "./config.mjs";
-import { readPaneDigest } from "./digest.mjs";
 import { isEnabled, readState, setEnabled } from "./state.mjs";
 import { renderAlert, sendTelegram } from "./telegram.mjs";
+import { defaultBranchResolver, readSnapshot, resolveLocation } from "./topology.mjs";
 
 export const TEST_DIGEST =
   "Agent Alerts test message. If you can read this, the Telegram configuration works.";
@@ -89,6 +89,14 @@ export function buildTestAlert(env = process.env) {
     "test-agent";
   const displayAgent = firstString(data.display_agent, data.displayAgent) ?? agent;
   const title = firstString(data.title, data.pane_title, context.title, workspaceId, tabId);
+  const cwd = firstString(
+    data.cwd,
+    data.foreground_cwd,
+    data.pane?.cwd,
+    data.pane?.foreground_cwd,
+    context.cwd,
+    context.foreground_cwd,
+  );
 
   return {
     kind: "blocked",
@@ -97,24 +105,37 @@ export function buildTestAlert(env = process.env) {
     title,
     workspaceId,
     tabId,
+    cwd,
     paneId,
   };
 }
 
-async function sendTest(cfg, env, fetchImpl) {
+async function sendTest(cfg, env, { fetchImpl = fetch, spawnImpl, snapshot, branchResolver } = {}) {
   const alert = buildTestAlert(env);
-  const paneDigest =
-    alert.paneId && alert.paneId !== "no-pane"
-      ? readPaneDigest({
-          herdrBin: cfg.herdrBin,
-          paneId: alert.paneId,
-          lines: cfg.digestLines,
-          maxChars: cfg.digestMaxChars,
-        })
-      : "";
-  alert.digest = paneDigest || TEST_DIGEST;
+  // A test message must be unmistakably a test: always the fixed body, never a
+  // live pane digest. This also skips the pane-read subprocess entirely.
+  alert.digest = TEST_DIGEST;
 
-  const text = renderAlert(alert);
+  // Same topology resolution and degradation as notify.mjs: one snapshot call,
+  // same branch resolver seam, and a legacy line when nothing was resolved.
+  let location = null;
+  if (alert.paneId && alert.paneId !== "no-pane") {
+    const currentSnapshot =
+      snapshot !== undefined
+        ? snapshot
+        : readSnapshot({ herdrBin: cfg.herdrBin, spawnImpl: spawnImpl ?? undefined });
+    location = resolveLocation(currentSnapshot, {
+      workspaceId: alert.workspaceId,
+      tabId: alert.tabId,
+      paneId: alert.paneId,
+      cwd: alert.cwd,
+      branchResolver:
+        branchResolver ??
+        ((args) => defaultBranchResolver({ ...args, spawnImpl: spawnImpl ?? undefined })),
+    });
+  }
+
+  const text = renderAlert({ ...alert, location });
   process.stdout.write(text + "\n");
 
   let result;
@@ -154,7 +175,7 @@ function printEnabled(cfg, enabled) {
 
 export async function main(
   argv = process.argv.slice(2),
-  { env = process.env, fetchImpl = fetch } = {},
+  { env = process.env, fetchImpl = fetch, spawnImpl, snapshot, branchResolver } = {},
 ) {
   const cfg = loadConfig(env);
   const command = String(argv[0] ?? "").trim().toLowerCase();
@@ -177,7 +198,7 @@ export async function main(
       return 0;
     }
     case "send-test":
-      return sendTest(cfg, env, fetchImpl);
+      return sendTest(cfg, env, { fetchImpl, spawnImpl, snapshot, branchResolver });
     default:
       console.error("usage: node src/actions.mjs <toggle|enable|disable|send-test>");
       return 2;

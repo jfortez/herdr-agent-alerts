@@ -217,10 +217,111 @@ test("REGRESSION: plain-text pane stdout reaches the rendered alert end to end",
   });
 
   assert.equal(code, 0);
-  assert.equal(spawnCalls.length, 1);
+  assert.equal(spawnCalls.length, 2);
+  // The digest read runs first; the snapshot read follows the dedupe gate.
+  assert.deepEqual(spawnCalls[1].args, ["api", "snapshot"]);
   const output = writes.join("");
   assert.match(output, /I need your approval to apply the change\./);
   assert.ok(!output.includes("waiting for input"));
+});
+
+test("an injected snapshot resolves the location into the rendered three-line alert", async (t) => {
+  const dir = tempDir("notify-location");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const snapshot = {
+    workspaces: [
+      {
+        workspace_id: "wA",
+        label: "[1] example-repo",
+        worktree: {
+          checkout_path: "/repos/example-repo",
+          is_linked_worktree: false,
+          repo_name: "example-repo",
+          repo_root: "/repos/example-repo",
+        },
+      },
+      {
+        workspace_id: "wB",
+        label: "[2] feat-example",
+        worktree: {
+          checkout_path: "/worktrees/example-repo/feat-example",
+          is_linked_worktree: true,
+          repo_name: "example-repo",
+          repo_root: "/repos/example-repo",
+        },
+      },
+    ],
+    tabs: [{ tab_id: "wB:t1", workspace_id: "wB", label: "[1] pi", number: 19 }],
+    panes: [
+      {
+        pane_id: "wB:p1",
+        workspace_id: "wB",
+        tab_id: "wB:t1",
+        cwd: "/worktrees/example-repo/feat-example",
+        foreground_cwd: "/worktrees/example-repo/feat-example",
+      },
+    ],
+  };
+
+  const code = await main({
+    env: {
+      ...scenarioEnv(dir),
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(
+        statusEvent({ pane_id: "wB:p1", workspace_id: "wB", agent_status: "blocked" }),
+      ),
+    },
+    snapshot,
+    branchResolver: () => ({ branch: "feat/example" }),
+    spawnImpl: () => ({ status: 1, stdout: "", stderr: "no digest" }),
+  });
+
+  assert.equal(code, 0);
+  const output = writes.join("");
+  assert.match(output, /^🙋 pi needs your answer\n/);
+  assert.match(output, /example-repo · feat\/example · worktree 2\/2/);
+  assert.match(output, /ws 2 · tab 1 · wB:p1/);
+});
+
+test("a failed snapshot still renders a usable alert and exits 0", async (t) => {
+  const dir = tempDir("notify-snapshot-fail");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const spawnImpl = (bin, args) => {
+    if (args[0] === "api") return { status: 1, stdout: "", stderr: "snapshot unavailable" };
+    return { status: 0, stdout: " ▎ Approve the patch?\n", stderr: "" };
+  };
+
+  const code = await main({
+    env: {
+      ...scenarioEnv(dir),
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(
+        statusEvent({ pane_id: "wA:p1", workspace_id: "wA", agent_status: "blocked" }),
+      ),
+    },
+    spawnImpl,
+  });
+
+  assert.equal(code, 0);
+  assert.equal(
+    writes.join(""),
+    [
+      "🙋 pi needs your answer",
+      "pi · pi - demo · wA:p1",
+      "────────────",
+      "Approve the patch?",
+    ].join("\n") + "\n",
+  );
 });
 
 test("the hook exits 0 with an empty digest when every read source fails", async (t) => {
@@ -247,7 +348,7 @@ test("the hook exits 0 with an empty digest when every read source fails", async
   });
 
   assert.equal(code, 0);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   const output = writes.join("");
   assert.match(output, /needs your answer/);
   assert.ok(!output.includes("────"));

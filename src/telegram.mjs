@@ -24,6 +24,38 @@ function firstValue(...values) {
   return null;
 }
 
+function stripIndexPrefix(label) {
+  return String(label).replace(/^\[\d+\]\s*/, "");
+}
+
+/** Line 2: repo · branch · worktree k/n, or the workspace label, or a fallback. */
+function placeLine(location, alert) {
+  const parts = [];
+  if (firstValue(location.repoName)) {
+    parts.push(String(location.repoName));
+    if (firstValue(location.branch)) parts.push(String(location.branch));
+    if (Number(location.worktreeTotal) > 1 && location.worktreeIndex != null) {
+      parts.push(`worktree ${location.worktreeIndex}/${location.worktreeTotal}`);
+    }
+  } else if (firstValue(location.workspaceLabel)) {
+    parts.push(stripIndexPrefix(location.workspaceLabel));
+  } else {
+    const fallback = firstValue(alert.title, alert.workspaceId, alert.tabId);
+    if (fallback) parts.push(fallback);
+  }
+  return parts.join(" · ");
+}
+
+/** Line 3: ws n · tab n · pane id. */
+function addressLine(location, alert) {
+  const parts = [];
+  if (location.workspaceNumber != null) parts.push(`ws ${location.workspaceNumber}`);
+  if (location.tabNumber != null) parts.push(`tab ${location.tabNumber}`);
+  const paneId = firstValue(location.paneId, alert.paneId);
+  if (paneId) parts.push(paneId);
+  return parts.join(" · ");
+}
+
 /** PURE: render one alert into the plain-text Telegram message. */
 export function renderAlert(alert = {}) {
   const kind = String(alert.kind ?? "");
@@ -32,17 +64,36 @@ export function renderAlert(alert = {}) {
   const agent = firstValue(alert.displayAgent, alert.agent);
 
   const header = [emoji, agent, headline].filter(Boolean).join(" ");
-  const location = [
-    firstValue(alert.displayAgent, alert.agent),
-    firstValue(alert.title, alert.workspaceId, alert.tabId),
-    firstValue(alert.paneId),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+
+  const location =
+    alert.location && typeof alert.location === "object" ? alert.location : null;
+  const addressed =
+    location !== null &&
+    (firstValue(location.repoName) !== null ||
+      firstValue(location.workspaceLabel) !== null ||
+      location.workspaceNumber != null ||
+      location.tabNumber != null);
+
+  const parts = [header];
+  if (addressed) {
+    const place = placeLine(location, alert);
+    if (place) parts.push(place);
+    const address = addressLine(location, alert);
+    if (address) parts.push(address);
+  } else {
+    // No resolved location (missing snapshot, dead pane, legacy caller): keep
+    // the single agent · title · pane line the alert had before topology.
+    const legacy = [
+      firstValue(alert.displayAgent, alert.agent),
+      firstValue(alert.title, alert.workspaceId, alert.tabId),
+      firstValue(alert.paneId),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    if (legacy) parts.push(legacy);
+  }
 
   const digest = String(alert.digest ?? "").trim();
-  const parts = [header];
-  if (location) parts.push(location);
   if (digest) {
     parts.push(SEPARATOR);
     parts.push(digest);

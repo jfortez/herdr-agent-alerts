@@ -62,6 +62,176 @@ test("caps the total message at 4000 characters", () => {
   assert.ok(text.endsWith("…"));
 });
 
+test("renders the three-line anatomy with repo, branch, worktree index and jump address", () => {
+  const text = renderAlert({
+    kind: "blocked",
+    agent: "pi",
+    displayAgent: "pi",
+    paneId: "wB:p1",
+    digest: "Approve the edit?",
+    location: {
+      workspaceLabel: "feat-example",
+      workspaceNumber: 5,
+      repoName: "example-repo",
+      branch: "feat/example",
+      worktreeIndex: 5,
+      worktreeTotal: 5,
+      tabLabel: "[1] pi",
+      tabNumber: 1,
+      paneId: "wB:p1",
+    },
+  });
+  assert.equal(
+    text,
+    [
+      "🙋 pi needs your answer",
+      "example-repo · feat/example · worktree 5/5",
+      "ws 5 · tab 1 · wB:p1",
+      "────────────",
+      "Approve the edit?",
+    ].join("\n"),
+  );
+});
+
+test("omits the worktree suffix when the repository has a single checkout", () => {
+  const text = renderAlert({
+    kind: "done",
+    agent: "pi",
+    paneId: "wA:p1",
+    digest: "",
+    location: {
+      workspaceNumber: 1,
+      repoName: "example-repo",
+      branch: "main",
+      worktreeIndex: 1,
+      worktreeTotal: 1,
+      tabNumber: 2,
+      paneId: "wA:p1",
+    },
+  });
+  assert.equal(text, ["✅ pi finished", "example-repo · main", "ws 1 · tab 2 · wA:p1"].join("\n"));
+  assert.ok(!text.includes("worktree"));
+});
+
+test("strips the [N] prefix from a workspace label when there is no repository", () => {
+  const text = renderAlert({
+    kind: "done",
+    agent: "pi",
+    paneId: "wC:p1",
+    location: {
+      workspaceLabel: "[6] example-lab",
+      workspaceNumber: 6,
+      repoName: null,
+      tabNumber: 1,
+      paneId: "wC:p1",
+    },
+  });
+  assert.equal(text, ["✅ pi finished", "example-lab", "ws 6 · tab 1 · wC:p1"].join("\n"));
+});
+
+test("keeps the repo and omits the branch when branch resolution failed", () => {
+  const text = renderAlert({
+    kind: "blocked",
+    agent: "pi",
+    paneId: "wA:p1",
+    digest: "hello",
+    location: {
+      workspaceNumber: 1,
+      repoName: "example-repo",
+      branch: null,
+      worktreeIndex: 1,
+      worktreeTotal: 1,
+      tabNumber: 1,
+      paneId: "wA:p1",
+    },
+  });
+  assert.equal(
+    text,
+    ["🙋 pi needs your answer", "example-repo", "ws 1 · tab 1 · wA:p1", "────────────", "hello"].join(
+      "\n",
+    ),
+  );
+});
+
+test("renders released and exited alerts with a location and no digest", () => {
+  const location = {
+    workspaceNumber: 2,
+    repoName: "example-repo",
+    branch: "feat/example",
+    worktreeIndex: 2,
+    worktreeTotal: 2,
+    tabNumber: 1,
+    paneId: "wB:p1",
+  };
+  const released = renderAlert({ kind: "released", agent: "pi", paneId: "wB:p1", location });
+  assert.equal(
+    released,
+    ["👋 pi left the pane", "example-repo · feat/example · worktree 2/2", "ws 2 · tab 1 · wB:p1"].join(
+      "\n",
+    ),
+  );
+  assert.ok(!released.includes("────"));
+
+  const exited = renderAlert({
+    kind: "exited",
+    agent: "pi",
+    paneId: "wA:p1",
+    location: { workspaceNumber: 1, repoName: "example-repo", tabNumber: 1, paneId: "wA:p1" },
+  });
+  assert.equal(
+    exited,
+    ["🏁 pi process exited", "example-repo", "ws 1 · tab 1 · wA:p1"].join("\n"),
+  );
+});
+
+test("degrades to the legacy location line when nothing was resolved", () => {
+  const text = renderAlert({
+    kind: "blocked",
+    agent: "pi",
+    displayAgent: "pi",
+    title: "pi - demo",
+    paneId: "wZ:p9",
+    digest: "",
+    location: {
+      workspaceLabel: null,
+      workspaceNumber: null,
+      repoName: null,
+      branch: null,
+      worktreeIndex: null,
+      worktreeTotal: null,
+      tabLabel: null,
+      tabNumber: null,
+      paneId: "wZ:p9",
+    },
+  });
+  assert.equal(text, "🙋 pi needs your answer\npi · pi - demo · wZ:p9");
+});
+
+test("caps the total message at 4000 characters with the new anatomy", () => {
+  const text = renderAlert({
+    kind: "blocked",
+    agent: "pi",
+    paneId: "wB:p1",
+    digest: "a".repeat(5000),
+    location: {
+      workspaceNumber: 2,
+      repoName: "example-repo",
+      branch: "feat/example",
+      worktreeIndex: 2,
+      worktreeTotal: 2,
+      tabNumber: 1,
+      paneId: "wB:p1",
+    },
+  });
+  assert.equal(text.length, MAX_MESSAGE_CHARS);
+  assert.ok(text.endsWith("…"));
+  assert.ok(
+    text.startsWith(
+      "🙋 pi needs your answer\nexample-repo · feat/example · worktree 2/2\nws 2 · tab 1 · wB:p1\n────────────\n",
+    ),
+  );
+});
+
 test("sendTelegram posts plain text and reports success", async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {

@@ -5,6 +5,7 @@ import { loadConfig } from "./config.mjs";
 import { readPaneDigest } from "./digest.mjs";
 import { isEnabled, shouldNotify } from "./state.mjs";
 import { renderAlert, sendTelegram } from "./telegram.mjs";
+import { defaultBranchResolver, readSnapshot, resolveLocation } from "./topology.mjs";
 
 const DEFAULT_GATES = {
   statuses: new Set(["blocked", "done"]),
@@ -77,6 +78,7 @@ function eventFields(data) {
       data?.workspace?.id,
     ),
     tabId: firstString(data?.tab_id, data?.tabId, data?.tab?.tab_id, data?.tab?.id),
+    cwd: firstString(data?.cwd, data?.foreground_cwd, data?.pane?.cwd, data?.pane?.foreground_cwd),
     title: firstString(data?.title, data?.pane_title, data?.paneTitle),
     agent: pickAgent(data),
     displayAgent: firstString(data?.display_agent, data?.displayAgent),
@@ -184,7 +186,13 @@ function writeDebugDump(cfg, env, kind) {
   }
 }
 
-export async function main({ env = process.env, fetchImpl = fetch, spawnImpl } = {}) {
+export async function main({
+  env = process.env,
+  fetchImpl = fetch,
+  spawnImpl,
+  snapshot,
+  branchResolver,
+} = {}) {
   const cfg = loadConfig(env);
   const alert = senseEvent(env, undefined, cfg);
   if (cfg.debugDump) writeDebugDump(cfg, env, alert?.kind);
@@ -194,6 +202,7 @@ export async function main({ env = process.env, fetchImpl = fetch, spawnImpl } =
   if (!alert) return 0;
 
   const paneId = alert.paneId ?? firstString(env.HERDR_PANE_ID) ?? "no-pane";
+  const eventPaneId = alert.paneId ?? firstString(env.HERDR_PANE_ID);
   const isStop = alert.kind === "released" || alert.kind === "exited";
   let digest = "";
   if (!isStop) {
@@ -212,7 +221,26 @@ export async function main({ env = process.env, fetchImpl = fetch, spawnImpl } =
 
   if (!shouldNotify(cfg, dedupeKeyFor(alert, paneId))) return 0;
 
-  const text = renderAlert({ ...alert, paneId, digest });
+  // One snapshot call per alert, skipped entirely when the event names no
+  // pane. On failure `resolveLocation` degrades to the legacy location line.
+  let location = null;
+  if (eventPaneId !== null) {
+    const currentSnapshot =
+      snapshot !== undefined
+        ? snapshot
+        : readSnapshot({ herdrBin: cfg.herdrBin, spawnImpl: spawnImpl ?? undefined });
+    location = resolveLocation(currentSnapshot, {
+      workspaceId: alert.workspaceId,
+      tabId: alert.tabId,
+      paneId: eventPaneId,
+      cwd: alert.cwd,
+      branchResolver:
+        branchResolver ??
+        ((args) => defaultBranchResolver({ ...args, spawnImpl: spawnImpl ?? undefined })),
+    });
+  }
+
+  const text = renderAlert({ ...alert, paneId, digest, location });
 
   if (cfg.dryRun) {
     process.stdout.write(text + "\n");

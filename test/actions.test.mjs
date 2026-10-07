@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildTestAlert, maskChatId, maskToken } from "../src/actions.mjs";
+import { TEST_DIGEST, buildTestAlert, main, maskChatId, maskToken } from "../src/actions.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -107,6 +107,178 @@ test("send-test in dry-run prints the alert, the result and a masked summary", (
   assert.match(result.stdout, /token: 123456:\*\*\*/);
   assert.match(result.stdout, /chat: \*\*\*8877/);
   assert.ok(!result.stdout.includes("super-secret"));
+});
+
+test("send-test renders the three-line anatomy with an injected snapshot and context", async (t) => {
+  const dir = tempDir("actions-location");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const snapshot = {
+    workspaces: [
+      {
+        workspace_id: "wB",
+        label: "[2] feat-example",
+        worktree: {
+          checkout_path: "/worktrees/example-repo/feat-example",
+          is_linked_worktree: true,
+          repo_name: "example-repo",
+          repo_root: "/repos/example-repo",
+        },
+      },
+      {
+        workspace_id: "wA",
+        label: "[1] example-repo",
+        worktree: {
+          checkout_path: "/repos/example-repo",
+          is_linked_worktree: false,
+          repo_name: "example-repo",
+          repo_root: "/repos/example-repo",
+        },
+      },
+    ],
+    tabs: [{ tab_id: "wB:t1", workspace_id: "wB", label: "[1] pi" }],
+    panes: [
+      {
+        pane_id: "wB:p1",
+        workspace_id: "wB",
+        tab_id: "wB:t1",
+        cwd: "/worktrees/example-repo/feat-example",
+      },
+    ],
+  };
+
+  const code = await main(["send-test"], {
+    env: {
+      ...scenarioEnv(dir),
+      ALHERDR_DRY_RUN: "1",
+      TELEGRAM_BOT_TOKEN: "123456:super-secret",
+      TELEGRAM_CHAT_ID: "998877",
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        pane: { pane_id: "wB:p1" },
+        workspace_id: "wB",
+        tab_id: "wB:t1",
+        agent: { name: "claude" },
+      }),
+    },
+    snapshot,
+    branchResolver: () => ({ branch: "feat/example" }),
+  });
+
+  assert.equal(code, 0);
+  const lines = writes.join("").split("\n");
+  assert.equal(lines[0], "🙋 claude needs your answer");
+  assert.equal(lines[1], "example-repo · feat/example · worktree 2/2");
+  assert.equal(lines[2], "ws 2 · tab 1 · wB:p1");
+  assert.equal(lines[3], "────────────");
+  assert.equal(lines[4], TEST_DIGEST);
+  assert.match(writes.join(""), /result: ok · status 0 · dry-run: not sent/);
+});
+
+test("send-test degrades to a usable single line and still delivers when the snapshot fails", async (t) => {
+  const dir = tempDir("actions-snapshot-fail");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const spawnCalls = [];
+  const spawnImpl = (bin, args) => {
+    spawnCalls.push(args);
+    return { status: 1, stdout: "", stderr: "snapshot unavailable" };
+  };
+
+  const fetchCalls = [];
+  const fetchImpl = async (url, options) => {
+    fetchCalls.push({ url, options });
+    return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 7 } }) };
+  };
+
+  const code = await main(["send-test"], {
+    env: {
+      ...scenarioEnv(dir),
+      ALHERDR_DRY_RUN: "0",
+      TELEGRAM_BOT_TOKEN: "123456:super-secret",
+      TELEGRAM_CHAT_ID: "998877",
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        pane: { pane_id: "wZ:p9" },
+        workspace_id: "wZ",
+        title: "demo title",
+        agent: { name: "claude" },
+      }),
+    },
+    spawnImpl,
+    fetchImpl,
+  });
+
+  assert.equal(code, 0);
+  assert.equal(fetchCalls.length, 1);
+  // Only the topology snapshot is read; the action never reads the pane.
+  assert.deepEqual(spawnCalls, [["api", "snapshot"]]);
+  const body = JSON.parse(fetchCalls[0].options.body);
+  assert.equal(
+    body.text,
+    [
+      "🙋 claude needs your answer",
+      "claude · demo title · wZ:p9",
+      "────────────",
+      TEST_DIGEST,
+    ].join("\n"),
+  );
+  assert.ok(!writes.join("").includes("\nws "));
+  assert.ok(!writes.join("").includes("super-secret"));
+});
+
+test("send-test never uses a live pane digest even when a pane read would succeed", async (t) => {
+  const dir = tempDir("actions-no-digest");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const spawnCalls = [];
+  const spawnImpl = (bin, args) => {
+    spawnCalls.push(args);
+    if (args[0] === "agent") {
+      // A readable live digest, if the action still asked for one.
+      return { status: 0, stdout: " ▎ LIVE DIGEST TEXT that must never be sent\n", stderr: "" };
+    }
+    return { status: 1, stdout: "", stderr: "snapshot unavailable" };
+  };
+
+  const fetchCalls = [];
+  const fetchImpl = async (url, options) => {
+    fetchCalls.push(JSON.parse(options.body).text);
+    return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 7 } }) };
+  };
+
+  const code = await main(["send-test"], {
+    env: {
+      ...scenarioEnv(dir),
+      ALHERDR_DRY_RUN: "0",
+      TELEGRAM_BOT_TOKEN: "123456:super-secret",
+      TELEGRAM_CHAT_ID: "998877",
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        pane: { pane_id: "wZ:p9" },
+        workspace_id: "wZ",
+        agent: { name: "claude" },
+      }),
+    },
+    spawnImpl,
+    fetchImpl,
+  });
+
+  assert.equal(code, 0);
+  assert.equal(fetchCalls.length, 1);
+  assert.ok(!fetchCalls[0].includes("LIVE DIGEST"));
+  assert.ok(fetchCalls[0].includes(TEST_DIGEST));
+  assert.deepEqual(spawnCalls, [["api", "snapshot"]]);
+  assert.ok(!writes.join("").includes("LIVE DIGEST"));
 });
 
 test("send-test fails cleanly when credentials are missing", () => {
