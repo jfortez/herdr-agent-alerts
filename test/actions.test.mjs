@@ -165,7 +165,7 @@ test("send-test renders the three-line anatomy with an injected snapshot and con
       }),
     },
     snapshot,
-    branchResolver: () => ({ branch: "feat/example" }),
+    checkoutProbe: () => ({ branch: "feat/example" }),
   });
 
   assert.equal(code, 0);

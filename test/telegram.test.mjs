@@ -153,6 +153,30 @@ test("keeps the repo and omits the branch when branch resolution failed", () => 
   );
 });
 
+test("renders repo · branch with no worktree suffix for a probe-discovered repository", () => {
+  const text = renderAlert({
+    kind: "blocked",
+    agent: "pi",
+    paneId: "wN1:p1",
+    digest: "",
+    location: {
+      workspaceLabel: "example-lab",
+      workspaceNumber: 4,
+      repoName: "example-repo",
+      branch: "feat/example",
+      worktreeIndex: null,
+      worktreeTotal: null,
+      tabNumber: 2,
+      paneId: "wN1:p1",
+    },
+  });
+  assert.equal(
+    text,
+    ["🙋 pi needs your answer", "example-repo · feat/example", "ws 4 · tab 2 · wN1:p1"].join("\n"),
+  );
+  assert.ok(!text.includes("worktree"));
+});
+
 test("renders released and exited alerts with a location and no digest", () => {
   const location = {
     workspaceNumber: 2,

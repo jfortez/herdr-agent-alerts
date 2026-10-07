@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.mjs";
 import { isEnabled, readState, setEnabled } from "./state.mjs";
 import { renderAlert, sendTelegram } from "./telegram.mjs";
-import { defaultBranchResolver, readSnapshot, resolveLocation } from "./topology.mjs";
+import { defaultCheckoutProbe, readSnapshot, resolveLocation } from "./topology.mjs";
 
 export const TEST_DIGEST =
   "Agent Alerts test message. If you can read this, the Telegram configuration works.";
@@ -110,7 +110,7 @@ export function buildTestAlert(env = process.env) {
   };
 }
 
-async function sendTest(cfg, env, { fetchImpl = fetch, spawnImpl, snapshot, branchResolver } = {}) {
+async function sendTest(cfg, env, { fetchImpl = fetch, spawnImpl, snapshot, checkoutProbe } = {}) {
   const alert = buildTestAlert(env);
   // A test message must be unmistakably a test: always the fixed body, never a
   // live pane digest. This also skips the pane-read subprocess entirely.
@@ -129,9 +129,9 @@ async function sendTest(cfg, env, { fetchImpl = fetch, spawnImpl, snapshot, bran
       tabId: alert.tabId,
       paneId: alert.paneId,
       cwd: alert.cwd,
-      branchResolver:
-        branchResolver ??
-        ((args) => defaultBranchResolver({ ...args, spawnImpl: spawnImpl ?? undefined })),
+      checkoutProbe:
+        checkoutProbe ??
+        ((args) => defaultCheckoutProbe({ ...args, spawnImpl: spawnImpl ?? undefined })),
     });
   }
 
@@ -175,7 +175,7 @@ function printEnabled(cfg, enabled) {
 
 export async function main(
   argv = process.argv.slice(2),
-  { env = process.env, fetchImpl = fetch, spawnImpl, snapshot, branchResolver } = {},
+  { env = process.env, fetchImpl = fetch, spawnImpl, snapshot, checkoutProbe } = {},
 ) {
   const cfg = loadConfig(env);
   const command = String(argv[0] ?? "").trim().toLowerCase();
@@ -198,7 +198,7 @@ export async function main(
       return 0;
     }
     case "send-test":
-      return sendTest(cfg, env, { fetchImpl, spawnImpl, snapshot, branchResolver });
+      return sendTest(cfg, env, { fetchImpl, spawnImpl, snapshot, checkoutProbe });
     default:
       console.error("usage: node src/actions.mjs <toggle|enable|disable|send-test>");
       return 2;

@@ -5,7 +5,7 @@ import { loadConfig } from "./config.mjs";
 import { readPaneDigest } from "./digest.mjs";
 import { isEnabled, shouldNotify } from "./state.mjs";
 import { renderAlert, sendTelegram } from "./telegram.mjs";
-import { defaultBranchResolver, readSnapshot, resolveLocation } from "./topology.mjs";
+import { defaultCheckoutProbe, readSnapshot, resolveLocation } from "./topology.mjs";
 
 const DEFAULT_GATES = {
   statuses: new Set(["blocked", "done"]),
@@ -191,7 +191,7 @@ export async function main({
   fetchImpl = fetch,
   spawnImpl,
   snapshot,
-  branchResolver,
+  checkoutProbe,
 } = {}) {
   const cfg = loadConfig(env);
   const alert = senseEvent(env, undefined, cfg);
@@ -234,9 +234,9 @@ export async function main({
       tabId: alert.tabId,
       paneId: eventPaneId,
       cwd: alert.cwd,
-      branchResolver:
-        branchResolver ??
-        ((args) => defaultBranchResolver({ ...args, spawnImpl: spawnImpl ?? undefined })),
+      checkoutProbe:
+        checkoutProbe ??
+        ((args) => defaultCheckoutProbe({ ...args, spawnImpl: spawnImpl ?? undefined })),
     });
   }
 

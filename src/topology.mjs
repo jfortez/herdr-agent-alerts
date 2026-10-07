@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { dirname } from "node:path";
 
 const SNAPSHOT_TIMEOUT_MS = 4000;
 const GIT_TIMEOUT_MS = 4000;
@@ -93,13 +94,13 @@ function repoDetails(workspaces, workspace) {
 }
 
 /**
- * PURE apart from the injected `branchResolver`: turn one event's ids into the
+ * PURE apart from the injected `checkoutProbe`: turn one event's ids into the
  * location shown on the alert. Every field is optional; a missing pane,
- * workspace, snapshot or resolver degrades to nulls instead of throwing.
+ * workspace, snapshot or probe degrades to nulls instead of throwing.
  */
 export function resolveLocation(
   snapshot,
-  { workspaceId, tabId, paneId, cwd, branchResolver } = {},
+  { workspaceId, tabId, paneId, cwd, checkoutProbe } = {},
 ) {
   const workspaces = Array.isArray(snapshot?.workspaces) ? snapshot.workspaces : [];
   const tabs = Array.isArray(snapshot?.tabs) ? snapshot.tabs : [];
@@ -142,28 +143,40 @@ export function resolveLocation(
     if (index >= 0) tabNumber = index + 1;
   }
 
-  // Prefer the worktree checkout; fall back to the snapshot pane, then the
-  // event's cwd. The resolver is never allowed to break resolution.
+  // One probe per alert at the effective path: the snapshot's tracked checkout
+  // first, then the pane cwd, then the event cwd. The probe is always the
+  // branch source (the branch checked out at alert time), and it fills the
+  // repository name when Herdr has no worktree block for this workspace. It is
+  // never allowed to break resolution.
   const checkoutPath =
     asString(workspace?.worktree?.checkout_path) ??
     asString(pane?.cwd) ??
     asString(pane?.foreground_cwd) ??
     asString(cwd);
 
-  let branch = null;
-  if (checkoutPath !== null && typeof branchResolver === "function") {
+  let probe = {};
+  if (checkoutPath !== null && typeof checkoutProbe === "function") {
     try {
-      branch = asString(branchResolver({ checkoutPath })?.branch);
+      probe = checkoutProbe({ checkoutPath }) ?? {};
     } catch {
-      branch = null;
+      probe = {};
     }
   }
+
+  // The snapshot stays authoritative when it names the repository; otherwise
+  // the probe's common-dir basename fills the gap.
+  const repoName =
+    asString(workspace?.worktree?.repo_name) ??
+    asString(probe.repoName) ??
+    repo?.name ??
+    null;
 
   return {
     workspaceLabel,
     workspaceNumber,
-    repoName: repo?.name ?? null,
-    branch,
+    repoName,
+    branch: asString(probe.branch) ?? null,
+    // Worktree k/n comes from Herdr's grouping only; never invent it.
     worktreeIndex: repo?.index ?? null,
     worktreeTotal: repo?.total ?? null,
     tabLabel: asString(tab?.label),
@@ -202,10 +215,18 @@ export function readSnapshot({
 }
 
 /**
- * Resolve the git branch of a checkout. Returns `{ branch }` or `{}`; detached
- * HEAD falls back to the short hash, and any git failure yields no branch.
+ * Impure edge: one `git rev-parse` probe answers both the repository (its
+ * absolute common dir) and the branch checked out at alert time. One
+ * subprocess; a detached HEAD costs a second short-hash call. Returns {} on
+ * any failure — nonzero exit, timeout, spawn error, malformed output — so a
+ * probe can never stop an alert, and junk output from a non-repository is
+ * discarded instead of trusted.
  */
-export function defaultBranchResolver({ checkoutPath, spawnImpl = spawnSync } = {}) {
+export function defaultCheckoutProbe({
+  checkoutPath,
+  spawnImpl = spawnSync,
+  timeoutMs = GIT_TIMEOUT_MS,
+} = {}) {
   const path = asString(checkoutPath);
   if (path === null) return {};
 
@@ -213,7 +234,7 @@ export function defaultBranchResolver({ checkoutPath, spawnImpl = spawnSync } = 
     try {
       const result = spawnImpl("git", ["-C", path, ...args], {
         encoding: "utf8",
-        timeout: GIT_TIMEOUT_MS,
+        timeout: timeoutMs,
         maxBuffer: 1024 * 1024,
       });
       if (!result || result.error || result.status !== 0) return null;
@@ -224,10 +245,28 @@ export function defaultBranchResolver({ checkoutPath, spawnImpl = spawnSync } = 
     }
   };
 
-  const name = run(["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (name === null) return {};
-  if (name !== "HEAD") return { branch: name };
+  const probe = run([
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+    "--abbrev-ref",
+    "HEAD",
+  ]);
+  if (probe === null) return {};
 
-  const short = run(["rev-parse", "--short", "HEAD"]);
-  return short === null ? {} : { branch: short };
+  const lines = probe
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return {};
+
+  const commonDir = lines[0];
+  const repoName = baseName(dirname(commonDir));
+  const head = lines[1];
+
+  if (head === "HEAD") {
+    const short = run(["rev-parse", "--short", "HEAD"]);
+    return short === null ? { repoName } : { repoName, branch: short };
+  }
+  return { repoName, branch: head };
 }

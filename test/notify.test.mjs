@@ -277,7 +277,7 @@ test("an injected snapshot resolves the location into the rendered three-line al
       ),
     },
     snapshot,
-    branchResolver: () => ({ branch: "feat/example" }),
+    checkoutProbe: () => ({ branch: "feat/example" }),
     spawnImpl: () => ({ status: 1, stdout: "", stderr: "no digest" }),
   });
 
@@ -322,6 +322,53 @@ test("a failed snapshot still renders a usable alert and exits 0", async (t) => 
       "Approve the patch?",
     ].join("\n") + "\n",
   );
+});
+
+test("a failing checkout probe still renders the alert and exits 0", async (t) => {
+  const dir = tempDir("notify-probe-fail");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const snapshot = {
+    workspaces: [{ workspace_id: "wN1", label: "[6] example-lab", worktree: null }],
+    tabs: [{ tab_id: "wN1:t1", workspace_id: "wN1", label: "[1] pi" }],
+    panes: [
+      {
+        pane_id: "wN1:p1",
+        workspace_id: "wN1",
+        tab_id: "wN1:t1",
+        cwd: "/synthetic/example-lab",
+      },
+    ],
+  };
+
+  const spawnImpl = (bin) => {
+    if (bin === "git") {
+      return { error: new Error("ETIMEDOUT"), status: null, stdout: "", stderr: "" };
+    }
+    return { status: 0, stdout: " ▎ Approve the patch?\n", stderr: "" };
+  };
+
+  const code = await main({
+    env: {
+      ...scenarioEnv(dir),
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(
+        statusEvent({ pane_id: "wN1:p1", workspace_id: "wN1", agent_status: "blocked" }),
+      ),
+    },
+    snapshot,
+    spawnImpl,
+  });
+
+  assert.equal(code, 0);
+  const output = writes.join("");
+  assert.match(output, /Approve the patch\?/);
+  assert.match(output, /example-lab/);
+  assert.ok(!output.includes("worktree"));
 });
 
 test("the hook exits 0 with an empty digest when every read source fails", async (t) => {
