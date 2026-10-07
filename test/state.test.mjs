@@ -76,12 +76,11 @@ test("corrupt dedupe state fails open and is rewritten", () => {
   assert.equal(store["p1|blocked"], 1000);
 });
 
-test("readState reports enabled and the last-alert store", () => {
+test("readState reports the enabled flag and the state dir", () => {
   const cfg = makeCfg();
   setEnabled(cfg, false);
   shouldNotify(cfg, "p1|done", 5000);
   const snapshot = readState(cfg);
   assert.equal(snapshot.enabled, false);
-  assert.equal(snapshot.lastAlerts["p1|done"], 5000);
   assert.equal(snapshot.stateDir, cfg.stateDir);
 });

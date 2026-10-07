@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "./config.mjs";
 import { isEnabled, readState, setEnabled } from "./state.mjs";
+import { firstString, stringFrom } from "./strings.mjs";
 import { renderAlert, sendTelegram } from "./telegram.mjs";
 import { defaultCheckoutProbe, readSnapshot, resolveLocation } from "./topology.mjs";
 
@@ -16,23 +17,6 @@ function parseJsonTolerant(value) {
   } catch {
     return null;
   }
-}
-
-function firstString(...values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  }
-  return null;
-}
-
-function stringFrom(value) {
-  if (value === undefined || value === null) return null;
-  if (typeof value === "string" || typeof value === "number") return firstString(value);
-  if (typeof value === "object") {
-    return firstString(value.name, value.id, value.command, value.display, value.display_name);
-  }
-  return null;
 }
 
 /** Never prints more of the bot token than the public numeric bot id. */
@@ -139,7 +123,9 @@ async function sendTest(
     });
   }
 
-  const text = renderAlert({ ...alert, location });
+  const alertView = { ...alert, location };
+  const text = renderAlert(alertView);
+  const plainText = renderAlert(alertView, { format: "text" });
   process.stdout.write(text + "\n");
 
   let result;
@@ -157,6 +143,7 @@ async function sendTest(
         token: cfg.token,
         chatId: cfg.chatId,
         text,
+        plainText,
         fetchImpl,
         sleepImpl,
       });

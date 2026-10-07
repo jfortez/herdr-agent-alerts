@@ -83,7 +83,6 @@ export function shouldNotify(cfg, key, now = Date.now()) {
 export function readState(cfg) {
   return {
     enabled: isEnabled(cfg),
-    lastAlerts: readAlertStore(cfg),
     stateDir: cfg.stateDir,
   };
 }

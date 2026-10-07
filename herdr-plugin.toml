@@ -1,7 +1,7 @@
 id = "alherdr.agent-alerts"
 name = "Agent Alerts"
 version = "0.1.0"
-min_herdr_version = "0.9.0"
+min_herdr_version = "0.9.1"
 description = "Alert a detected agent's blocked or done state to Telegram, with a real extract of the agent's own output."
 platforms = ["linux", "macos"]
 

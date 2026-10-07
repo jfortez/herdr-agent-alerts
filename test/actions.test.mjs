@@ -61,14 +61,14 @@ test("maskChatId reveals at most the last four digits", () => {
 test("buildTestAlert reads HERDR_PLUGIN_CONTEXT_JSON", () => {
   const alert = buildTestAlert({
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
-      workspace_id: "w1",
-      pane: { pane_id: "w1:p2" },
+      workspace_id: "wExample",
+      pane: { pane_id: "wExample:p2" },
       agent: { name: "claude" },
     }),
   });
   assert.equal(alert.kind, "blocked");
-  assert.equal(alert.paneId, "w1:p2");
-  assert.equal(alert.workspaceId, "w1");
+  assert.equal(alert.paneId, "wExample:p2");
+  assert.equal(alert.workspaceId, "wExample");
   assert.equal(alert.agent, "claude");
   assert.equal(alert.displayAgent, "claude");
 });
@@ -76,11 +76,11 @@ test("buildTestAlert reads HERDR_PLUGIN_CONTEXT_JSON", () => {
 test("buildTestAlert falls back to the HERDR_* pane ids", () => {
   const alert = buildTestAlert({
     HERDR_PANE_ID: "p9",
-    HERDR_WORKSPACE_ID: "w9",
+    HERDR_WORKSPACE_ID: "wExample",
     HERDR_TAB_ID: "t9",
   });
   assert.equal(alert.paneId, "p9");
-  assert.equal(alert.workspaceId, "w9");
+  assert.equal(alert.workspaceId, "wExample");
   assert.equal(alert.tabId, "t9");
   assert.equal(alert.agent, "test-agent");
 });
@@ -93,15 +93,15 @@ test("send-test in dry-run prints the alert, the result and a masked summary", (
     TELEGRAM_BOT_TOKEN: "123456:super-secret",
     TELEGRAM_CHAT_ID: "998877",
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
-      workspace_id: "w1",
-      pane: { pane_id: "w1:p2" },
+      workspace_id: "wExample",
+      pane: { pane_id: "wExample:p2" },
       agent: { name: "claude" },
     }),
   });
 
   assert.equal(result.status, 0);
   assert.match(result.stdout, /🙋 claude needs your answer/);
-  assert.match(result.stdout, /claude · w1/);
+  assert.match(result.stdout, /claude · wExample/);
   assert.match(result.stdout, /Agent Alerts test message/);
   assert.match(result.stdout, /result: ok · status 0 · dry-run: not sent/);
   assert.match(result.stdout, /token: 123456:\*\*\*/);
@@ -170,11 +170,14 @@ test("send-test renders the three-line anatomy with an injected snapshot and con
 
   assert.equal(code, 0);
   const lines = writes.join("").split("\n");
-  assert.equal(lines[0], "🙋 claude needs your answer");
-  assert.equal(lines[1], "example-repo · feat/example · worktree 2/2");
-  assert.equal(lines[2], "ws 2 · tab 1 · wB:p1");
+  assert.equal(lines[0], "<b>🙋 claude needs your answer</b>");
+  assert.equal(lines[1], "<code>example-repo · feat/example · worktree 2/2</code>");
+  assert.equal(lines[2], "<code>pi · ws 2 · tab 1 · wB:p1</code>");
   assert.equal(lines[3], "────────────");
-  assert.equal(lines[4], TEST_DIGEST);
+  assert.equal(
+    lines[4],
+    "<pre>Agent Alerts test message. If you can read this, the Telegram configuration works.</pre>",
+  );
   assert.match(writes.join(""), /result: ok · status 0 · dry-run: not sent/);
 });
 
@@ -220,13 +223,14 @@ test("send-test degrades to a usable single line and still delivers when the sna
   // Only the topology snapshot is read; the action never reads the pane.
   assert.deepEqual(spawnCalls, [["api", "snapshot"]]);
   const body = JSON.parse(fetchCalls[0].options.body);
+  assert.equal(body.parse_mode, "HTML");
   assert.equal(
     body.text,
     [
-      "🙋 claude needs your answer",
-      "claude · demo title · wZ:p9",
+      "<b>🙋 claude needs your answer</b>",
+      "<code>claude · demo title · wZ:p9</code>",
       "────────────",
-      TEST_DIGEST,
+      `<pre>${TEST_DIGEST}</pre>`,
     ].join("\n"),
   );
   assert.ok(!writes.join("").includes("\nws "));

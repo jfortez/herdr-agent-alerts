@@ -212,7 +212,7 @@ if command -v "$HERDR_CMD" >/dev/null 2>&1; then
 fi
 if [[ -z "$config_dir" ]]; then
   config_dir_assumed=1
-  config_dir="$HOME/.config/herdr/plugins/config/alherdr.agent-alerts"
+  config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/herdr/plugins/config/alherdr.agent-alerts"
 fi
 if (( config_dir_assumed )); then
   printf '\n'

@@ -5,13 +5,13 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PLUGIN_ROOT = resolve(HERE, "..");
 
-export const KNOWN_STATUSES = new Set(["idle", "working", "blocked", "done", "unknown"]);
-export const DEFAULT_STATUSES = ["blocked", "done"];
-export const KNOWN_KINDS = new Set(["blocked", "done", "released", "exited"]);
-export const DEFAULT_SILENT_KINDS = ["released", "exited"];
+const KNOWN_STATUSES = new Set(["idle", "working", "blocked", "done", "unknown"]);
+const DEFAULT_STATUSES = ["blocked", "done"];
+const KNOWN_KINDS = new Set(["blocked", "done", "released", "exited"]);
+const DEFAULT_SILENT_KINDS = ["released", "exited"];
 
 const DEFAULTS = {
-  digestLines: 40,
+  digestLines: 24,
   digestMaxChars: 1200,
   dedupeSeconds: 30,
 };
@@ -24,13 +24,13 @@ export function parseBoolean(value, fallback) {
   return fallback;
 }
 
-export function parseNumber(value, fallback) {
+function parseNumber(value, fallback) {
   if (value === undefined || value === null) return fallback;
   const parsed = Number(String(value).trim());
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-export function parseDotenv(text) {
+function parseDotenv(text) {
   const values = {};
   for (const line of String(text).replace(/^\uFEFF/, "").split(/\r?\n/)) {
     const trimmed = line.trim();
