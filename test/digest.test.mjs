@@ -163,6 +163,71 @@ test("readPaneDigest unwraps a JSON { output } envelope if a wrapper returns one
   assert.equal(readPaneDigest({ paneId: "p1", spawnImpl }), "hello world");
 });
 
+test("falls back to the visible source when recent-unwrapped fails on a blocked pane", () => {
+  const calls = [];
+  const spawnImpl = (bin, args) => {
+    calls.push(args);
+    const source = args[args.indexOf("--source") + 1];
+    if (source === "recent-unwrapped") {
+      return {
+        status: 1,
+        stdout: JSON.stringify({ error: { code: "agent_not_idle", message: "agent is not idle" } }),
+        stderr: "",
+      };
+    }
+    return {
+      status: 0,
+      stdout: " │ Allow this change? │\n │ ❯ Yes                  │\n │   No                  │\n",
+      stderr: "",
+    };
+  };
+  const digest = readPaneDigest({ herdrBin: "herdr", paneId: "p1", lines: 40, spawnImpl });
+  assert.equal(digest, "Allow this change?\n❯ Yes\n  No");
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].includes("recent-unwrapped"));
+  assert.ok(calls[1].includes("visible"));
+});
+
+test("an error envelope never reaches the digest, even with exit 0", () => {
+  const envelope = JSON.stringify({
+    error: { code: "agent_not_idle", message: "agent is not idle" },
+  });
+
+  // Envelope on stdout with exit 0.
+  assert.equal(
+    readPaneDigest({ paneId: "p1", spawnImpl: () => ({ status: 0, stdout: envelope, stderr: "" }) }),
+    "",
+  );
+  // Envelope on stderr with exit 0.
+  assert.equal(
+    readPaneDigest({
+      paneId: "p1",
+      spawnImpl: () => ({ status: 0, stdout: " │ valid text │\n", stderr: envelope }),
+    }),
+    "",
+  );
+  // Envelope with exit 0 on the first source, real text on the second.
+  const spawnImpl = (bin, args) => {
+    const source = args[args.indexOf("--source") + 1];
+    return source === "recent-unwrapped"
+      ? { status: 0, stdout: envelope, stderr: "" }
+      : { status: 0, stdout: " │ question │\n", stderr: "" };
+  };
+  const digest = readPaneDigest({ paneId: "p1", spawnImpl });
+  assert.equal(digest, "question");
+  assert.ok(!digest.includes("agent_not_idle"));
+});
+
+test("returns empty string when every read source fails", () => {
+  const calls = [];
+  const spawnImpl = (bin, args) => {
+    calls.push(args);
+    return { status: 1, stdout: "", stderr: "no such pane" };
+  };
+  assert.equal(readPaneDigest({ herdrBin: "herdr", paneId: "p1", spawnImpl }), "");
+  assert.equal(calls.length, 2);
+});
+
 test("readPaneDigest returns empty string on genuine failures", () => {
   const failureModes = [
     () => ({ status: 1, stdout: "", stderr: "no such pane" }),

@@ -223,6 +223,36 @@ test("REGRESSION: plain-text pane stdout reaches the rendered alert end to end",
   assert.ok(!output.includes("waiting for input"));
 });
 
+test("the hook exits 0 with an empty digest when every read source fails", async (t) => {
+  const dir = tempDir("notify-read-fail");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const calls = [];
+  const spawnImpl = (bin, args) => {
+    calls.push(args);
+    return { status: 1, stdout: "", stderr: "agent_not_idle" };
+  };
+
+  const code = await main({
+    env: {
+      ...scenarioEnv(dir),
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent({ agent_status: "blocked" })),
+    },
+    spawnImpl,
+  });
+
+  assert.equal(code, 0);
+  assert.equal(calls.length, 2);
+  const output = writes.join("");
+  assert.match(output, /needs your answer/);
+  assert.ok(!output.includes("────"));
+});
+
 test("dry-run smoke: prints the rendered alert and exits 0", () => {
   const dir = tempDir("notify-dry");
   const result = runNotify({

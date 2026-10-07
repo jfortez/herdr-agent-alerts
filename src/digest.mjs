@@ -172,9 +172,68 @@ function unwrapPaneOutput(stdout) {
   return text;
 }
 
+// A blocked agent rejects `recent-unwrapped`; `visible` still works there.
+const READ_SOURCES = ["recent-unwrapped", "visible"];
+
+/**
+ * Herdr reports some failures as a JSON envelope on stdout or stderr, e.g.
+ * {"error":{"code":"agent_not_idle",...}}. Such a payload is a failed read
+ * and must never reach the digest.
+ */
+function parseErrorEnvelope(text) {
+  if (typeof text !== "string") return null;
+  if (!text.trimStart().startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      parsed.error &&
+      typeof parsed.error === "object"
+    ) {
+      const code = typeof parsed.error.code === "string" ? parsed.error.code : "";
+      const message = typeof parsed.error.message === "string" ? parsed.error.message : "";
+      return [code, message].filter(Boolean).join(": ") || "error envelope";
+    }
+  } catch {
+    // Not JSON: the raw text is the payload.
+  }
+  return null;
+}
+
+function runPaneRead({ herdrBin, paneId, source, lines, spawnImpl, timeoutMs }) {
+  const result = spawnImpl(
+    herdrBin,
+    ["agent", "read", String(paneId), "--source", source, "--lines", String(lines)],
+    {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  );
+  if (result?.error) {
+    return { ok: false, reason: result.error.message ?? String(result.error) };
+  }
+
+  const stdout = typeof result?.stdout === "string" ? result.stdout : "";
+  const stderr = typeof result?.stderr === "string" ? result.stderr : "";
+
+  const envelope = parseErrorEnvelope(stdout) ?? parseErrorEnvelope(stderr);
+  if (envelope) return { ok: false, reason: envelope };
+
+  if (!result || result.status !== 0) {
+    const detail = stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : "";
+    return { ok: false, reason: `exit ${result?.status ?? "unknown"}${detail}` };
+  }
+  return { ok: true, stdout };
+}
+
 /**
  * Impure edge: read the pane through the herdr binary and extract the digest.
- * Returns "" on any failure so an event hook never fails because a pane is gone.
+ * Tries `recent-unwrapped` first and falls back to `visible` (a blocked pane
+ * rejects the former). Returns "" only after every source fails, so an event
+ * hook never fails because a pane is gone.
  */
 export function readPaneDigest({
   herdrBin = "herdr",
@@ -185,36 +244,31 @@ export function readPaneDigest({
   timeoutMs = 8000,
 } = {}) {
   if (!paneId) return "";
-  try {
-    const result = spawnImpl(
-      herdrBin,
-      [
-        "agent",
-        "read",
-        String(paneId),
-        "--source",
-        "recent-unwrapped",
-        "--lines",
-        String(lines),
-      ],
-      {
-        encoding: "utf8",
-        timeout: timeoutMs,
-        maxBuffer: 4 * 1024 * 1024,
-      },
-    );
-    if (result?.error) {
-      console.error(`[alherdr] no se pudo leer el pane ${paneId}: ${result.error.message ?? result.error}`);
-      return "";
+
+  const failures = [];
+  for (const source of READ_SOURCES) {
+    let read;
+    try {
+      read = runPaneRead({ herdrBin, paneId, source, lines, spawnImpl, timeoutMs });
+    } catch (err) {
+      failures.push(`${source} (${err?.message ?? err})`);
+      continue;
     }
-    if (!result || result.status !== 0 || typeof result.stdout !== "string") {
-      const detail = result?.stderr ? `: ${String(result.stderr).trim().slice(0, 300)}` : "";
-      console.error(`[alherdr] no se pudo leer el pane ${paneId}${detail}`);
-      return "";
+
+    if (!read.ok) {
+      failures.push(`${source} (${read.reason})`);
+      continue;
     }
-    return extractDigest(unwrapPaneOutput(result.stdout), { maxLines: lines, maxChars });
-  } catch (err) {
-    console.error(`[alherdr] no se pudo leer el pane ${paneId}: ${err?.message ?? err}`);
-    return "";
+
+    const digest = extractDigest(unwrapPaneOutput(read.stdout), { maxLines: lines, maxChars });
+    if (digest !== "") return digest;
+    // A successful read that only carried chrome does not stop the fallback.
   }
+
+  if (failures.length > 0) {
+    console.error(
+      `[alherdr] could not extract a digest from pane ${paneId}; failed sources: ${failures.join(", ")}`,
+    );
+  }
+  return "";
 }
