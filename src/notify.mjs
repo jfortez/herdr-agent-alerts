@@ -189,6 +189,7 @@ function writeDebugDump(cfg, env, kind) {
 export async function main({
   env = process.env,
   fetchImpl = fetch,
+  sleepImpl,
   spawnImpl,
   snapshot,
   checkoutProbe,
@@ -241,9 +242,15 @@ export async function main({
   }
 
   const text = renderAlert({ ...alert, paneId, digest, location });
+  const silent = cfg.silentKinds.has(alert.kind);
 
   if (cfg.dryRun) {
     process.stdout.write(text + "\n");
+    // The message stays on stdout for the documented recipe; the delivery
+    // flag is only visible here, so dry-run reports it on stderr.
+    process.stderr.write(
+      `[alherdr] dry-run: kind=${alert.kind} disable_notification=${silent}\n`,
+    );
     return 0;
   }
 
@@ -258,6 +265,8 @@ export async function main({
       chatId: cfg.chatId,
       text,
       fetchImpl,
+      sleepImpl,
+      disableNotification: silent,
     });
     if (!result.ok) {
       console.error(

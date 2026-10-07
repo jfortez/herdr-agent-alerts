@@ -297,7 +297,16 @@ test("sendTelegram rejects on a transport failure so the caller can contain it",
   const fetchImpl = async () => {
     throw new Error("network down");
   };
-  await assert.rejects(sendTelegram({ token: "1:a", chatId: "2", text: "x", fetchImpl }), /network down/);
+  await assert.rejects(
+    sendTelegram({
+      token: "1:a",
+      chatId: "2",
+      text: "x",
+      fetchImpl,
+      sleepImpl: async () => {},
+    }),
+    /network down/,
+  );
 });
 
 test("sendTelegram treats an unparseable body as not ok", async () => {
@@ -311,4 +320,204 @@ test("sendTelegram treats an unparseable body as not ok", async () => {
   const result = await sendTelegram({ token: "1:a", chatId: "2", text: "x", fetchImpl });
   assert.equal(result.ok, false);
   assert.equal(result.status, 200);
+});
+
+test("sendTelegram carries disable_notification: true only when asked", async () => {
+  const bodies = [];
+  const fetchImpl = async (url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 1 } }) };
+  };
+
+  await sendTelegram({
+    token: "1:a",
+    chatId: "2",
+    text: "silent",
+    fetchImpl,
+    disableNotification: true,
+  });
+  await sendTelegram({ token: "1:a", chatId: "2", text: "audible", fetchImpl });
+
+  assert.equal(bodies[0].disable_notification, true);
+  assert.equal(bodies[1].disable_notification, false);
+});
+
+test("sendTelegram retries a transport rejection and delivers exactly once", async () => {
+  let attempts = 0;
+  const sleeps = [];
+  const fetchImpl = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("network down");
+    return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 1 } }) };
+  };
+
+  const result = await sendTelegram({
+    token: "1:a",
+    chatId: "2",
+    text: "x",
+    fetchImpl,
+    sleepImpl: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(attempts, 2);
+  assert.deepEqual(sleeps, [400]);
+});
+
+test("sendTelegram gives up after exactly three attempts on persistent 5xx", async () => {
+  let attempts = 0;
+  const sleeps = [];
+  const fetchImpl = async () => {
+    attempts += 1;
+    return {
+      ok: false,
+      status: 503,
+      json: async () => ({ ok: false, description: "Service Unavailable" }),
+    };
+  };
+
+  const result = await sendTelegram({
+    token: "1:a",
+    chatId: "2",
+    text: "x",
+    fetchImpl,
+    sleepImpl: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  assert.deepEqual(result, { ok: false, status: 503, description: "Service Unavailable" });
+  assert.equal(attempts, 3);
+  assert.deepEqual(sleeps, [400, 1200]);
+});
+
+test("sendTelegram rejects after exactly three transport failures", async () => {
+  let attempts = 0;
+  const sleeps = [];
+  const fetchImpl = async () => {
+    attempts += 1;
+    throw new Error("network down");
+  };
+
+  await assert.rejects(
+    sendTelegram({
+      token: "1:a",
+      chatId: "2",
+      text: "x",
+      fetchImpl,
+      sleepImpl: async (ms) => {
+        sleeps.push(ms);
+      },
+    }),
+    /network down/,
+  );
+  assert.equal(attempts, 3);
+  assert.deepEqual(sleeps, [400, 1200]);
+});
+
+test("sendTelegram never retries a 4xx", async () => {
+  let attempts = 0;
+  const sleeps = [];
+  const fetchImpl = async () => {
+    attempts += 1;
+    return {
+      ok: false,
+      status: 400,
+      json: async () => ({ ok: false, description: "Bad Request: chat not found" }),
+    };
+  };
+
+  const result = await sendTelegram({
+    token: "1:a",
+    chatId: "2",
+    text: "x",
+    fetchImpl,
+    sleepImpl: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    status: 400,
+    description: "Bad Request: chat not found",
+  });
+  assert.equal(attempts, 1);
+  assert.deepEqual(sleeps, []);
+});
+
+test("sendTelegram honors 429 retry_after and caps an excessive wait", async () => {
+  const sleeps = [];
+  let attempts = 0;
+  const fetchImpl = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return {
+        ok: false,
+        status: 429,
+        json: async () => ({ ok: false, parameters: { retry_after: 2 } }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 1 } }) };
+  };
+
+  const result = await sendTelegram({
+    token: "1:a",
+    chatId: "2",
+    text: "x",
+    fetchImpl,
+    sleepImpl: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(sleeps, [2000]);
+
+  // An absurd retry_after cannot stall the hook: the wait is capped at 5 s.
+  const capped = [];
+  let second = false;
+  const cappedFetch = async () => {
+    if (!second) {
+      second = true;
+      return {
+        ok: false,
+        status: 429,
+        json: async () => ({ ok: false, parameters: { retry_after: 99 } }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  await sendTelegram({
+    token: "1:a",
+    chatId: "2",
+    text: "x",
+    fetchImpl: cappedFetch,
+    sleepImpl: async (ms) => {
+      capped.push(ms);
+    },
+  });
+  assert.deepEqual(capped, [5000]);
+
+  // A 429 without retry_after falls back to the normal backoff.
+  const plain = [];
+  let third = false;
+  const plainFetch = async () => {
+    if (!third) {
+      third = true;
+      return { ok: false, status: 429, json: async () => ({ ok: false }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  await sendTelegram({
+    token: "1:a",
+    chatId: "2",
+    text: "x",
+    fetchImpl: plainFetch,
+    sleepImpl: async (ms) => {
+      plain.push(ms);
+    },
+  });
+  assert.deepEqual(plain, [400]);
 });

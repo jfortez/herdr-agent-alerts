@@ -567,3 +567,155 @@ test("an unwritable ALHERDR_DEBUG_DUMP is logged and ignored", () => {
   assert.match(result.stdout, /finished/);
   assert.match(result.stderr, /could not write ALHERDR_DEBUG_DUMP/);
 });
+
+// --- silence and retries ----------------------------------------------------
+
+function releasedEvent(overrides = {}) {
+  return {
+    event: "pane.agent_detected",
+    data: {
+      type: "pane_agent_detected",
+      pane_id: "w1J:p1",
+      workspace_id: "w1J",
+      released: true,
+      agent: "pi",
+      display_agent: "pi",
+      title: "pi - demo",
+      ...overrides,
+    },
+  };
+}
+
+test("dry-run reports the delivery flag on stderr and keeps stdout as the message", () => {
+  const dir = tempDir("notify-dry-flag");
+
+  const blocked = runNotify({
+    ...scenarioEnv(dir),
+    HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent({ agent_status: "blocked" })),
+  });
+  assert.equal(blocked.status, 0);
+  assert.match(blocked.stdout, /needs your answer/);
+  assert.ok(!blocked.stdout.includes("disable_notification"));
+  assert.match(blocked.stderr, /disable_notification=false/);
+
+  const done = runNotify({
+    ...scenarioEnv(dir),
+    HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent()),
+  });
+  assert.equal(done.status, 0);
+  assert.match(done.stderr, /disable_notification=false/);
+
+  const released = runNotify({
+    ...scenarioEnv(dir),
+    HERDR_PLUGIN_EVENT: "pane.agent_detected",
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify(releasedEvent()),
+  });
+  assert.equal(released.status, 0);
+  assert.match(released.stdout, /left the pane/);
+  assert.match(released.stderr, /disable_notification=true/);
+});
+
+test("ALHERDR_SILENT_KINDS overrides which kinds are silent", () => {
+  const dir = tempDir("notify-silent-override");
+  const silent = "done";
+
+  const done = runNotify({
+    ...scenarioEnv(dir, { ALHERDR_SILENT_KINDS: silent }),
+    HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent()),
+  });
+  assert.match(done.stderr, /disable_notification=true/);
+
+  const released = runNotify({
+    ...scenarioEnv(dir, { ALHERDR_SILENT_KINDS: silent }),
+    HERDR_PLUGIN_EVENT: "pane.agent_detected",
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify(releasedEvent()),
+  });
+  assert.match(released.stderr, /disable_notification=false/);
+});
+
+test("the delivered body marks blocked audible and released silent", async () => {
+  const dir = tempDir("notify-silent-body");
+  const bodies = [];
+  const fetchImpl = async (url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 1 } }) };
+  };
+  const baseEnv = scenarioEnv(dir, {
+    ALHERDR_DRY_RUN: "0",
+    TELEGRAM_BOT_TOKEN: "123456:super-secret",
+    TELEGRAM_CHAT_ID: "998877",
+  });
+  const quietRead = () => ({ status: 0, stdout: "", stderr: "" });
+
+  const blocked = await main({
+    env: {
+      ...baseEnv,
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent({ agent_status: "blocked" })),
+    },
+    fetchImpl,
+    snapshot: {},
+    spawnImpl: quietRead,
+    sleepImpl: async () => {},
+  });
+  assert.equal(blocked, 0);
+
+  const released = await main({
+    env: {
+      ...baseEnv,
+      HERDR_PLUGIN_EVENT: "pane.agent_detected",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(releasedEvent({ pane_id: "wB:p1" })),
+    },
+    fetchImpl,
+    snapshot: {},
+    sleepImpl: async () => {},
+  });
+  assert.equal(released, 0);
+
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0].disable_notification, false);
+  assert.match(bodies[0].text, /needs your answer/);
+  assert.equal(bodies[1].disable_notification, true);
+  assert.match(bodies[1].text, /left the pane/);
+});
+
+test("the hook exits 0, renders the alert and logs once when every attempt fails", async (t) => {
+  const dir = tempDir("notify-all-attempts-fail");
+  const errors = [];
+  t.mock.method(console, "error", (message) => {
+    errors.push(String(message));
+  });
+
+  const bodies = [];
+  const fetchImpl = async (url, options) => {
+    bodies.push(JSON.parse(options.body));
+    throw new Error("network down");
+  };
+
+  const code = await main({
+    env: {
+      ...scenarioEnv(dir, {
+        ALHERDR_DRY_RUN: "0",
+        TELEGRAM_BOT_TOKEN: "123456:super-secret",
+        TELEGRAM_CHAT_ID: "998877",
+      }),
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent({ agent_status: "blocked" })),
+    },
+    fetchImpl,
+    snapshot: {},
+    spawnImpl: () => ({ status: 0, stdout: "", stderr: "" }),
+    sleepImpl: async () => {},
+  });
+
+  assert.equal(code, 0);
+  assert.equal(bodies.length, 3);
+  assert.match(bodies[0].text, /needs your answer/);
+  assert.deepEqual(
+    errors.filter((line) => line.includes("network failure while sending to Telegram")),
+    ["[alherdr] network failure while sending to Telegram: network down"],
+  );
+});

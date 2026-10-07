@@ -7,6 +7,8 @@ const DEFAULT_PLUGIN_ROOT = resolve(HERE, "..");
 
 export const KNOWN_STATUSES = new Set(["idle", "working", "blocked", "done", "unknown"]);
 export const DEFAULT_STATUSES = ["blocked", "done"];
+export const KNOWN_KINDS = new Set(["blocked", "done", "released", "exited"]);
+export const DEFAULT_SILENT_KINDS = ["released", "exited"];
 
 const DEFAULTS = {
   digestLines: 40,
@@ -64,14 +66,22 @@ function trimOrNull(value) {
   return text === "" ? null : text;
 }
 
-function parseStatuses(value) {
-  if (value === undefined || value === null) return new Set(DEFAULT_STATUSES);
-  const statuses = new Set();
+function parseNameSet(value, known, defaults) {
+  if (value === undefined || value === null) return new Set(defaults);
+  const names = new Set();
   for (const raw of String(value).split(",")) {
     const name = raw.trim().toLowerCase();
-    if (KNOWN_STATUSES.has(name)) statuses.add(name);
+    if (known.has(name)) names.add(name);
   }
-  return statuses;
+  return names;
+}
+
+function parseStatuses(value) {
+  return parseNameSet(value, KNOWN_STATUSES, DEFAULT_STATUSES);
+}
+
+function parseSilentKinds(value) {
+  return parseNameSet(value, KNOWN_KINDS, DEFAULT_SILENT_KINDS);
 }
 
 /**
@@ -99,6 +109,7 @@ export function loadConfig(env = process.env) {
     token: trimOrNull(read("TELEGRAM_BOT_TOKEN")),
     chatId: trimOrNull(read("TELEGRAM_CHAT_ID")),
     statuses: parseStatuses(read("ALHERDR_STATUSES")),
+    silentKinds: parseSilentKinds(read("ALHERDR_SILENT_KINDS")),
     alertReleased: parseBoolean(read("ALHERDR_ALERT_RELEASED"), true),
     alertExited: parseBoolean(read("ALHERDR_ALERT_EXITED"), true),
     digestLines: parseNumber(read("ALHERDR_DIGEST_LINES"), DEFAULTS.digestLines),

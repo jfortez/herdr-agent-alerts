@@ -1,6 +1,13 @@
 export const MAX_MESSAGE_CHARS = 4000;
 export const SEPARATOR = "────────────";
 
+// Delivery retry policy: three attempts total (the original plus two retries),
+// a bounded backoff between them, and a cap on Telegram's 429 retry_after so a
+// hostile value cannot stall a Herdr event hook.
+export const MAX_SEND_ATTEMPTS = 3;
+export const RETRY_BACKOFF_MS = Object.freeze([400, 1200]);
+export const MAX_RETRY_AFTER_MS = 5000;
+
 const HEADLINES = {
   blocked: "needs your answer",
   done: "finished",
@@ -106,32 +113,78 @@ export function renderAlert(alert = {}) {
   return text;
 }
 
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wait before the next attempt: retry_after when Telegram sent one, capped. */
+function retryDelayMs(attempt, payload) {
+  const retryAfter = Number(payload?.parameters?.retry_after);
+  if (Number.isFinite(retryAfter)) {
+    return Math.min(Math.max(retryAfter, 0) * 1000, MAX_RETRY_AFTER_MS);
+  }
+  return RETRY_BACKOFF_MS[attempt - 1];
+}
+
 /**
- * POST one plain-text message to Telegram. Never throws on an HTTP error;
- * only a transport failure rejects, and the caller contains it.
+ * POST one plain-text message to Telegram. A transport failure rejects after
+ * at most three attempts; an HTTP error is returned, never thrown, and a 429
+ * or 5xx is retried with bounded backoff. `sleepImpl` is injectable so tests
+ * do not actually wait, and `disableNotification` becomes Telegram's
+ * `disable_notification` flag.
  */
-export async function sendTelegram({ token, chatId, text, fetchImpl = fetch }) {
-  const response = await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      disable_web_page_preview: true,
-    }),
-    signal: AbortSignal.timeout(15000),
+export async function sendTelegram({
+  token,
+  chatId,
+  text,
+  fetchImpl = fetch,
+  sleepImpl = defaultSleep,
+  disableNotification = false,
+}) {
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  const body = JSON.stringify({
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: true,
+    disable_notification: Boolean(disableNotification),
   });
 
-  let body = null;
-  try {
-    body = await response.json();
-  } catch {
-    body = null;
+  for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt += 1) {
+    let response;
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (err) {
+      // A transport rejection is transient; the last one propagates to the
+      // caller exactly as before.
+      if (attempt >= MAX_SEND_ATTEMPTS) throw err;
+      await sleepImpl(RETRY_BACKOFF_MS[attempt - 1]);
+      continue;
+    }
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+
+    const result = {
+      ok: payload?.ok === true,
+      status: response.status,
+      description: payload?.description ?? "",
+    };
+
+    const retryable = result.status === 429 || result.status >= 500;
+    if (result.ok || !retryable || attempt >= MAX_SEND_ATTEMPTS) return result;
+
+    await sleepImpl(retryDelayMs(attempt, payload));
   }
 
-  return {
-    ok: body?.ok === true,
-    status: response.status,
-    description: body?.description ?? "",
-  };
+  // Unreachable: every loop iteration either returns or throws by attempt 3.
+  throw new Error("sendTelegram ended without a result");
 }

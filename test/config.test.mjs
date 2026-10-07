@@ -96,6 +96,21 @@ test("parses statuses, ignoring unknown names and normalizing case", () => {
   assert.deepEqual([...cfg.statuses].sort(), ["blocked", "unknown", "working"]);
 });
 
+test("defaults silent kinds to released and exited", () => {
+  const { env } = isolatedEnv();
+  assert.deepEqual([...loadConfig(env).silentKinds].sort(), ["exited", "released"]);
+});
+
+test("parses ALHERDR_SILENT_KINDS like statuses, ignoring unknown names", () => {
+  const { env } = isolatedEnv({ ALHERDR_SILENT_KINDS: "DONE, banana,  Released " });
+  assert.deepEqual([...loadConfig(env).silentKinds].sort(), ["done", "released"]);
+});
+
+test("an empty ALHERDR_SILENT_KINDS makes every kind audible", () => {
+  const { env } = isolatedEnv({ ALHERDR_SILENT_KINDS: "" });
+  assert.equal(loadConfig(env).silentKinds.size, 0);
+});
+
 test("parses boolean variants and falls back on garbage", () => {
   const variants = [
     ["1", true],

@@ -110,7 +110,11 @@ export function buildTestAlert(env = process.env) {
   };
 }
 
-async function sendTest(cfg, env, { fetchImpl = fetch, spawnImpl, snapshot, checkoutProbe } = {}) {
+async function sendTest(
+  cfg,
+  env,
+  { fetchImpl = fetch, sleepImpl, spawnImpl, snapshot, checkoutProbe } = {},
+) {
   const alert = buildTestAlert(env);
   // A test message must be unmistakably a test: always the fixed body, never a
   // live pane digest. This also skips the pane-read subprocess entirely.
@@ -149,7 +153,13 @@ async function sendTest(cfg, env, { fetchImpl = fetch, spawnImpl, snapshot, chec
     };
   } else {
     try {
-      result = await sendTelegram({ token: cfg.token, chatId: cfg.chatId, text, fetchImpl });
+      result = await sendTelegram({
+        token: cfg.token,
+        chatId: cfg.chatId,
+        text,
+        fetchImpl,
+        sleepImpl,
+      });
     } catch (err) {
       result = { ok: false, status: 0, description: `network failure: ${err?.message ?? err}` };
     }
@@ -175,7 +185,7 @@ function printEnabled(cfg, enabled) {
 
 export async function main(
   argv = process.argv.slice(2),
-  { env = process.env, fetchImpl = fetch, spawnImpl, snapshot, checkoutProbe } = {},
+  { env = process.env, fetchImpl = fetch, sleepImpl, spawnImpl, snapshot, checkoutProbe } = {},
 ) {
   const cfg = loadConfig(env);
   const command = String(argv[0] ?? "").trim().toLowerCase();
@@ -198,7 +208,7 @@ export async function main(
       return 0;
     }
     case "send-test":
-      return sendTest(cfg, env, { fetchImpl, spawnImpl, snapshot, checkoutProbe });
+      return sendTest(cfg, env, { fetchImpl, sleepImpl, spawnImpl, snapshot, checkoutProbe });
     default:
       console.error("usage: node src/actions.mjs <toggle|enable|disable|send-test>");
       return 2;
