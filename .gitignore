@@ -1,3 +1,6 @@
+# ODD working documentation: local task tracking, not repository content.
+odd/
+
 # Local secrets and machine state never get committed.
 .env
 .env.local
