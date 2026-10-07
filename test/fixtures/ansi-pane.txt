@@ -1,0 +1,4 @@
+ ▎ [32mok[0m · build · 40ms
+]0;my-titleText with title
+progress 10%progress 100%
+[1mbold[22m and end  

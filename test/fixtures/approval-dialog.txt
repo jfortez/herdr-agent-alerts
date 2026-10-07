@@ -1,0 +1,13 @@
+                         ▎
+                         ▎ ✿ Status
+                         ▎
+                         ▎ Project
+                         ▎  ~/dev/example-project
+                         ▎  Branch feat/example-dialog
+ ╭──────────────────────────────────────────────╮ ▎
+ │ Allow the agent to edit src/app.mjs?         │ ▎
+ │                                              │ ▎
+ │ ❯ Yes, allow                                 │ ▎
+ │   No, deny                                   │ ▎
+ ╰──────────────────────────────────────────────╯ ▎
+                         ▎ pending answer

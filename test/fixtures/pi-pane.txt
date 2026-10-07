@@ -1,0 +1,18 @@
+ ▎ ok · tool_alpha · 120ms
+ ▎ ok · tool_beta · 80ms
+ ▎ Successfully wrote to src/example.mjs
+ ▎ #2 second task updated
+ ▎
+
+An assistant sentence wrapped normally without a gutter.
+
+ TPS 33.3 tok/s. out 1.234, in 5.678, cache r/w 100.000/0, total 7.890, 42.0s
+
+ ▎
+ ▎ ❀ Agents  1 active
+ ▎
+ ▎ ◐  sample-agent  Review the change        model-x · high · 1.0M · $0.001 · 1m02s
+ ▎
+ ▎ ✿ waiting for input
+ ▎   type, or / for commands
+ ▎

@@ -1,0 +1,5 @@
+ ▎ ❀ Agents  1 active
+ ▎ ◐  sample-agent  Review the change        model-x · high · 1.0M · $0.001 · 1m02s
+ ▎ ✿ waiting for input
+ ▎   type, or / for commands
+ TPS 12.5 tok/s. out 1.000, in 2.000, total 3.000, 10.0s
