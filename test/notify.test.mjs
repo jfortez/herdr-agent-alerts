@@ -56,8 +56,8 @@ function statusEvent(overrides = {}) {
     event: "pane.agent_status_changed",
     data: {
       type: "pane_agent_status_changed",
-      pane_id: "w1J:p1",
-      workspace_id: "w1J",
+      pane_id: "wA:p1",
+      workspace_id: "wA",
       agent_status: "done",
       agent: "pi",
       display_agent: "pi",
@@ -76,8 +76,8 @@ test("classifies blocked and done status changes", () => {
     DEFAULT_CFG,
   );
   assert.equal(blocked.kind, "blocked");
-  assert.equal(blocked.paneId, "w1J:p1");
-  assert.equal(blocked.workspaceId, "w1J");
+  assert.equal(blocked.paneId, "wA:p1");
+  assert.equal(blocked.workspaceId, "wA");
   assert.equal(blocked.agent, "claude");
   assert.equal(blocked.displayAgent, "Claude");
   assert.equal(blocked.title, "pi - demo");
@@ -218,7 +218,7 @@ test("REGRESSION: plain-text pane stdout reaches the rendered alert end to end",
 
   assert.equal(code, 0);
   assert.equal(spawnCalls.length, 2);
-  // The digest read runs first; the snapshot read follows the dedupe gate.
+  // The dedupe gate runs first; the digest read and the snapshot read follow.
   assert.deepEqual(spawnCalls[1].args, ["api", "snapshot"]);
   const output = writes.join("");
   assert.match(output, /I need your approval to apply the change\./);
@@ -283,7 +283,7 @@ test("an injected snapshot resolves the location into the rendered three-line al
 
   assert.equal(code, 0);
   const output = writes.join("");
-  assert.match(output, /^🙋 pi needs your answer\n/);
+  assert.match(output, /^<b>🙋 pi needs your answer<\/b>\n/);
   assert.match(output, /example-repo · feat\/example · worktree 2\/2/);
   assert.match(output, /ws 2 · tab 1 · wB:p1/);
 });
@@ -316,10 +316,10 @@ test("a failed snapshot still renders a usable alert and exits 0", async (t) => 
   assert.equal(
     writes.join(""),
     [
-      "🙋 pi needs your answer",
-      "pi · pi - demo · wA:p1",
+      "<b>🙋 pi needs your answer</b>",
+      "<code>pi · pi - demo · wA:p1</code>",
       "────────────",
-      "Approve the patch?",
+      "<pre>Approve the patch?</pre>",
     ].join("\n") + "\n",
   );
 });
@@ -401,6 +401,69 @@ test("the hook exits 0 with an empty digest when every read source fails", async
   assert.ok(!output.includes("────"));
 });
 
+test("a blocked event renders only the extracted dialog", async (t) => {
+  const dir = tempDir("notify-dialog");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const paneText = readFileSync(
+    join(REPO_ROOT, "test", "fixtures", "blocked-dialog.txt"),
+    "utf8",
+  );
+  const spawnImpl = (bin) =>
+    bin === "git"
+      ? { status: 1, stdout: "", stderr: "not a repository" }
+      : { status: 0, stdout: paneText, stderr: "" };
+
+  const code = await main({
+    env: {
+      ...scenarioEnv(dir),
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent({ agent_status: "blocked" })),
+    },
+    spawnImpl,
+  });
+
+  assert.equal(code, 0);
+  const output = writes.join("");
+  assert.match(output, /Allow the recursive delete command\?/);
+  assert.match(output, /❯ Yes/);
+  assert.match(output, /  No/);
+  assert.ok(!output.includes("build.mjs"));
+  assert.ok(!output.includes("navigate"));
+});
+
+test("a blocked event with no dialog still renders the tail digest", async (t) => {
+  const dir = tempDir("notify-dialog-fallback");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const spawnImpl = (bin) =>
+    bin === "git"
+      ? { status: 1, stdout: "", stderr: "not a repository" }
+      : { status: 0, stdout: " ▎ Finished the task.\n ▎ All tests pass.\n", stderr: "" };
+
+  const code = await main({
+    env: {
+      ...scenarioEnv(dir),
+      HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent({ agent_status: "blocked" })),
+    },
+    spawnImpl,
+  });
+
+  assert.equal(code, 0);
+  const output = writes.join("");
+  assert.match(output, /Finished the task\./);
+  assert.match(output, /All tests pass\./);
+});
+
 test("dry-run smoke: prints the rendered alert and exits 0", () => {
   const dir = tempDir("notify-dry");
   const result = runNotify({
@@ -410,7 +473,7 @@ test("dry-run smoke: prints the rendered alert and exits 0", () => {
   });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /✅ pi finished/);
-  assert.match(result.stdout, /pi · pi - demo · w1J:p1/);
+  assert.match(result.stdout, /pi · pi - demo · wA:p1/);
   assert.equal(result.stdout.trim().split("\n").length, 2);
 });
 
@@ -451,6 +514,32 @@ test("dedupe suppresses a repeated status within the window", () => {
   const second = runNotify(env);
   assert.equal(second.status, 0);
   assert.equal(second.stdout.trim(), "");
+});
+
+test("a suppressed duplicate performs no pane read", async (t) => {
+  const dir = tempDir("notify-dedupe-no-read");
+  t.mock.method(process.stdout, "write", () => true);
+
+  const env = {
+    ...scenarioEnv(dir, { ALHERDR_DEDUPE_SECONDS: "600" }),
+    HERDR_PLUGIN_EVENT: "pane.agent_status_changed",
+    HERDR_PLUGIN_EVENT_JSON: JSON.stringify(statusEvent({ agent_status: "blocked" })),
+  };
+
+  const calls = [];
+  const spawnImpl = (bin, args) => {
+    calls.push(args);
+    return { status: 0, stdout: " ▎ Approve the patch?\n", stderr: "" };
+  };
+
+  // The first alert is delivered, so it reads the pane once (the snapshot is
+  // injected). The duplicate inside the dedupe window must not spawn at all.
+  assert.equal(await main({ env, spawnImpl, snapshot: {} }), 0);
+  assert.equal(calls.filter((args) => args[0] === "agent").length, 1);
+
+  calls.length = 0;
+  assert.equal(await main({ env, spawnImpl, snapshot: {} }), 0);
+  assert.deepEqual(calls, []);
 });
 
 test("released and exited are one user-visible event for a pane", () => {
@@ -575,8 +664,8 @@ function releasedEvent(overrides = {}) {
     event: "pane.agent_detected",
     data: {
       type: "pane_agent_detected",
-      pane_id: "w1J:p1",
-      workspace_id: "w1J",
+      pane_id: "wA:p1",
+      workspace_id: "wA",
       released: true,
       agent: "pi",
       display_agent: "pi",

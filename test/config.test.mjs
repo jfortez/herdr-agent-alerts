@@ -42,7 +42,7 @@ test("applies sane defaults when nothing is configured", () => {
   assert.deepEqual([...cfg.statuses].sort(), ["blocked", "done"]);
   assert.equal(cfg.alertReleased, true);
   assert.equal(cfg.alertExited, true);
-  assert.equal(cfg.digestLines, 40);
+  assert.equal(cfg.digestLines, 24);
   assert.equal(cfg.digestMaxChars, 1200);
   assert.equal(cfg.dedupeSeconds, 30);
   assert.equal(cfg.enabledByDefault, true);
@@ -138,7 +138,7 @@ test("falls back to defaults for unparsable numbers", () => {
     ALHERDR_DEDUPE_SECONDS: "",
   });
   const cfg = loadConfig(env);
-  assert.equal(cfg.digestLines, 40);
+  assert.equal(cfg.digestLines, 24);
   assert.equal(cfg.digestMaxChars, 1200);
   // An empty string parses as 0, which is a valid "no dedupe" setting.
   assert.equal(cfg.dedupeSeconds, 0);

@@ -1,0 +1,18 @@
+node build.mjs --minify --format=esm
+--outfile=dist/app.js --log-level=error)
+node -e "
+const fs=require('fs');
+console.log('size', fs.statSync('dist/app.js').size);
+"
+echo "--- versions ---"
+for f in x y z; do echo -n "$f: "; node -e "console.log(1)" 2>/dev/null || true; done (timeout 60s)
+
+✓ sample-explore-agent  trace routing through the example app
+model-x · max · 123k · $0.012 · 2m00s
+
+Allow the recursive delete command?
+setup() { local dir="$1"; rm -rf "$dir"; mkdir -p "$dir"; cd "$dir"; }
+printf '{"name":"sandbox","private":true,"type":"module"}' > package.json
+❯ Yes
+  No
+↑↓ navigate  enter select  escape/ctrl+c cancel

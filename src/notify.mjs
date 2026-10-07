@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.mjs";
 import { readPaneDigest } from "./digest.mjs";
 import { isEnabled, shouldNotify } from "./state.mjs";
+import { firstString, stringFrom } from "./strings.mjs";
 import { renderAlert, sendTelegram } from "./telegram.mjs";
 import { defaultCheckoutProbe, readSnapshot, resolveLocation } from "./topology.mjs";
 
@@ -12,24 +13,6 @@ const DEFAULT_GATES = {
   alertReleased: true,
   alertExited: true,
 };
-
-function firstString(...values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  }
-  return null;
-}
-
-function stringFrom(value) {
-  if (value === undefined || value === null) return null;
-  if (typeof value === "string") return firstString(value);
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  if (typeof value === "object") {
-    return firstString(value.name, value.id, value.command, value.display, value.display_name);
-  }
-  return null;
-}
 
 function pickAgent(data) {
   return (
@@ -204,23 +187,31 @@ export async function main({
 
   const paneId = alert.paneId ?? firstString(env.HERDR_PANE_ID) ?? "no-pane";
   const eventPaneId = alert.paneId ?? firstString(env.HERDR_PANE_ID);
+
+  // Decide delivery before touching the pane: a suppressed duplicate must not
+  // spend two `herdr agent read` subprocesses on a digest nobody receives.
+  if (!shouldNotify(cfg, dedupeKeyFor(alert, paneId))) return 0;
+
   const isStop = alert.kind === "released" || alert.kind === "exited";
   let digest = "";
+  let dialog = null;
   if (!isStop) {
     try {
-      digest = readPaneDigest({
+      const pane = readPaneDigest({
         herdrBin: cfg.herdrBin,
         paneId,
         lines: cfg.digestLines,
         maxChars: cfg.digestMaxChars,
         spawnImpl: spawnImpl ?? undefined,
+        // A blocked pane's answer is the dialog, not the tool transcript.
+        preferDialog: alert.kind === "blocked",
       });
+      digest = pane.digest;
+      dialog = pane.dialog;
     } catch (err) {
       console.error(`[alherdr] digest unavailable: ${err?.message ?? err}`);
     }
   }
-
-  if (!shouldNotify(cfg, dedupeKeyFor(alert, paneId))) return 0;
 
   // One snapshot call per alert, skipped entirely when the event names no
   // pane. On failure `resolveLocation` degrades to the legacy location line.
@@ -241,7 +232,8 @@ export async function main({
     });
   }
 
-  const text = renderAlert({ ...alert, paneId, digest, location });
+  const alertView = { ...alert, paneId, digest, dialog, location };
+  const text = renderAlert(alertView);
   const silent = cfg.silentKinds.has(alert.kind);
 
   if (cfg.dryRun) {
@@ -264,6 +256,7 @@ export async function main({
       token: cfg.token,
       chatId: cfg.chatId,
       text,
+      plainText: renderAlert(alertView, { format: "text" }),
       fetchImpl,
       sleepImpl,
       disableNotification: silent,

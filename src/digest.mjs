@@ -20,8 +20,9 @@ const BOX_BORDER_CHARS = "│║┃▏▕╭╮╯╰├┤┬┴┼┌┐└┘
 const LEADING_BORDER_RE = new RegExp(`^\\s*[${BOX_BORDER_CHARS}] ?`);
 const TRAILING_BORDER_RE = new RegExp(` ?[${BOX_BORDER_CHARS}]$`);
 
-// Spinner / activity glyphs used by the agent panel and status rows.
-const GLYPH = "◐◑◒◓◜◝◞◟⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏❀✿✾❁✻✽✶✷✸✹✺✳✢⋆";
+// Spinner / activity glyphs used by the agent panel and status rows. The
+// check/status marks below are how the panel prefixes an agent row.
+const GLYPH = "◐◑◒◓◜◝◞◟⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏❀✿✾❁✻✽✶✷✸✹✺✳✢⋆✓✔✗✘●○◉◆◇▪▫⊘";
 const GLYPH_LINE_RE = new RegExp(`^\\s*[${GLYPH}](?:\\s|$)`);
 const SPINNER_RE = new RegExp(`^\\s*[${GLYPH}]+\\s*$`);
 
@@ -30,6 +31,30 @@ const TELEMETRY_RE = /(?:^|\s)(?:TPS\s*[\d.]+|\d+(?:\.\d+)?\s*tok\/s)/i;
 
 // Bare status phrases the agent panel prints around the input prompt.
 const STATUS_PHRASE_RE = /^(?:✿\s*)?waiting for input$|^type, or \/ for commands$|^esc to interrupt$/i;
+
+// Dialog footer hints: "↑↓ navigate  enter select  escape/ctrl+c cancel".
+// Case-sensitive on purpose: "Navigate the tree" in prose is not a footer.
+const FOOTER_RE = /(?:↑↓|↑\/↓)|\bnavigate\b|\benter select\b|\besc(?:ape)?(?:\/ctrl\+c)?(?: to)? cancel\b|\btab to switch\b/;
+
+// Agent-panel model/cost row: "model-x · max · 123k · $0.012 · 2m00s".
+// Only a middle-dot separated line with a reasoning-effort word, a currency
+// field or a token count is chrome; ordinary prose is left alone.
+const EFFORT_FIELD_RE = /^(?:max|min|low|medium|high)$/;
+const CURRENCY_FIELD_RE = /^[$€£]\s?\d/;
+const TOKEN_COUNT_FIELD_RE = /^\d+(?:\.\d+)?[kKmM]$/;
+function isModelRow(line) {
+  const fields = line
+    .split("·")
+    .map((field) => field.trim())
+    .filter(Boolean);
+  if (fields.length < 2) return false;
+  return fields.some(
+    (field) =>
+      EFFORT_FIELD_RE.test(field) ||
+      CURRENCY_FIELD_RE.test(field) ||
+      TOKEN_COUNT_FIELD_RE.test(field),
+  );
+}
 
 // Box-drawing rules and similar full-width separators.
 const RULE_RE = /^[─━═╌┄┈]{3,}$/;
@@ -83,8 +108,35 @@ function isChrome(line) {
   if (GLYPH_LINE_RE.test(trimmed)) return true;
   if (SPINNER_RE.test(trimmed)) return true;
   if (STATUS_PHRASE_RE.test(trimmed)) return true;
+  if (FOOTER_RE.test(trimmed)) return true;
+  if (isModelRow(trimmed)) return true;
   if (RULE_RE.test(trimmed)) return true;
   return false;
+}
+
+/** Clean every pane line and drop TUI chrome; blank lines are preserved. */
+function cleanLines(rawOutput) {
+  const raw = rawOutput == null ? "" : String(rawOutput);
+  const cleaned = [];
+  for (const line of raw.split("\n")) {
+    const clean = cleanLine(line);
+    if (isChrome(clean)) continue;
+    cleaned.push(clean);
+  }
+  return cleaned;
+}
+
+/** Collapse runs of blank lines into one and trim leading/trailing blanks. */
+function collapseBlanks(lines) {
+  const collapsed = [];
+  for (const line of lines) {
+    const blank = line.trim() === "";
+    if (blank && collapsed.length > 0 && collapsed[collapsed.length - 1].trim() === "") continue;
+    collapsed.push(blank ? "" : line);
+  }
+  while (collapsed.length > 0 && collapsed[0].trim() === "") collapsed.shift();
+  while (collapsed.length > 0 && collapsed[collapsed.length - 1].trim() === "") collapsed.pop();
+  return collapsed;
 }
 
 /**
@@ -100,22 +152,7 @@ export function extractDigest(rawOutput, { maxLines = 40, maxChars = 1200 } = {}
   const limit = Number.isFinite(maxLines) ? Math.max(0, Math.floor(maxLines)) : Infinity;
   if (limit === 0) return "";
 
-  const cleaned = [];
-  for (const line of raw.split("\n")) {
-    const clean = cleanLine(line);
-    if (isChrome(clean)) continue;
-    cleaned.push(clean);
-  }
-
-  // Collapse runs of blank lines into a single blank line, then trim edges.
-  const collapsed = [];
-  for (const line of cleaned) {
-    const blank = line.trim() === "";
-    if (blank && collapsed.length > 0 && collapsed[collapsed.length - 1].trim() === "") continue;
-    collapsed.push(blank ? "" : line);
-  }
-  while (collapsed.length > 0 && collapsed[0].trim() === "") collapsed.shift();
-  while (collapsed.length > 0 && collapsed[collapsed.length - 1].trim() === "") collapsed.pop();
+  const collapsed = collapseBlanks(cleanLines(raw));
   if (collapsed.length === 0) return "";
 
   // Keep the last `maxLines` meaningful (non-blank) lines. Blanks inside the
@@ -149,6 +186,113 @@ export function extractDigest(rawOutput, { maxLines = 40, maxChars = 1200 } = {}
     if (text.length > cap) text = text.slice(0, cap);
   }
   return text;
+}
+
+const DIALOG_MARKER = "❯";
+const DIALOG_QUESTION_WINDOW = 8;
+const DIALOG_MAX_OPTIONS = 6;
+const ELISION = "…";
+
+// A question line: its final `?` is followed only by optional whitespace and an
+// optional trailing parenthetical. An embedded `?` (a URL or a shell command)
+// must never match.
+const DIALOG_QUESTION_RE = /\?(\s*\([^)]*\))?\s*$/;
+
+/** Keep the head and tail of a line block, replacing the middle with an ellipsis. */
+function elideLines(lines, budget) {
+  if (lines.length === 0) return [];
+  if (lines.length <= budget) return lines;
+  if (budget <= 1) return [ELISION];
+  const keep = budget - 1;
+  const headCount = Math.ceil(keep / 2);
+  const tailCount = keep - headCount;
+  return [...lines.slice(0, headCount), ELISION, ...lines.slice(lines.length - tailCount)];
+}
+
+/** Keep the head and tail of a text run, cutting on word boundaries. */
+function elideMiddleChars(text, budget) {
+  if (budget <= 0) return "";
+  if (text.length <= budget) return text;
+  if (budget === 1) return ELISION;
+  const keep = budget - 1;
+  const headChars = Math.ceil(keep / 2);
+  const tailChars = keep - headChars;
+  let head = text.slice(0, headChars);
+  let tail = text.slice(text.length - tailChars);
+  const headCut = head.search(/\s\S*$/);
+  if (headCut !== -1) head = head.slice(0, headCut);
+  const tailCut = tail.match(/^\S*\s/);
+  if (tailCut !== null) tail = tail.slice(tailCut[0].length);
+  const out = `${head.trimEnd()}${ELISION}${tail.trimStart()}`;
+  return out.length <= budget ? out : out.slice(0, budget);
+}
+
+/**
+ * PURE: pull the approval dialog out of a blocked pane. Returns
+ * `{ question, preview, options }` or null when no dialog is detectable.
+ * Reuses the same line cleaning and chrome filtering as extractDigest.
+ */
+export function extractDialog(rawOutput, { maxLines = 40, maxChars = 1200 } = {}) {
+  const lines = cleanLines(rawOutput);
+  if (lines.length === 0) return null;
+
+  const trimmed = lines.map((line) => line.trim());
+
+  // Question: the LAST question line that has an option marker within the
+  // next 8 lines. The marker is the first one after that question.
+  let questionIndex = -1;
+  let optionsStart = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!DIALOG_QUESTION_RE.test(trimmed[index])) continue;
+    const windowEnd = Math.min(index + DIALOG_QUESTION_WINDOW, lines.length - 1);
+    for (let after = index + 1; after <= windowEnd; after += 1) {
+      if (trimmed[after].startsWith(DIALOG_MARKER)) {
+        questionIndex = index;
+        optionsStart = after;
+        break;
+      }
+    }
+    if (questionIndex !== -1) break;
+  }
+  if (questionIndex === -1) return null;
+
+  // Options: the marker line plus consecutive non-blank lines, capped. Chrome
+  // and footer lines are already filtered out, so a blank line ends the block.
+  const options = [];
+  for (
+    let index = optionsStart;
+    index < lines.length && options.length < DIALOG_MAX_OPTIONS;
+    index += 1
+  ) {
+    if (trimmed[index] === "") break;
+    options.push(lines[index].trimEnd());
+  }
+  if (options.length === 0) return null;
+
+  const question = lines[questionIndex].trimEnd();
+  const previewLines = collapseBlanks(lines.slice(questionIndex + 1, optionsStart));
+
+  // Assemble under maxLines; question and options always survive, the preview
+  // middle is elided and marked.
+  const limit = Number.isFinite(maxLines) ? Math.max(0, Math.floor(maxLines)) : Infinity;
+  const available = limit - 1 - options.length;
+  const selectedPreview =
+    previewLines.length <= available ? previewLines : elideLines(previewLines, available);
+
+  let preview = selectedPreview.join("\n");
+  const optionsText = options.join("\n");
+
+  const cap = Number.isFinite(maxChars) ? Math.max(0, Math.floor(maxChars)) : 0;
+  if (cap > 0) {
+    const separators = preview === "" ? 1 : 2;
+    const total = question.length + preview.length + optionsText.length + separators;
+    if (total > cap) {
+      const budget = cap - question.length - optionsText.length - separators;
+      preview = budget > 0 ? elideMiddleChars(preview, budget) : "";
+    }
+  }
+
+  return { question, preview, options: optionsText };
 }
 
 /**
@@ -230,10 +374,11 @@ function runPaneRead({ herdrBin, paneId, source, lines, spawnImpl, timeoutMs }) 
 }
 
 /**
- * Impure edge: read the pane through the herdr binary and extract the digest.
- * Tries `recent-unwrapped` first and falls back to `visible` (a blocked pane
- * rejects the former). Returns "" only after every source fails, so an event
- * hook never fails because a pane is gone.
+ * Impure edge: read the pane through the herdr binary and extract the tail
+ * digest plus, when `preferDialog`, the structured approval dialog. Tries
+ * `recent-unwrapped` first and falls back to `visible` (a blocked pane rejects
+ * the former). Returns `{ digest: "", dialog: null }` only after every source
+ * fails, so an event hook never fails because a pane is gone.
  */
 export function readPaneDigest({
   herdrBin = "herdr",
@@ -242,8 +387,9 @@ export function readPaneDigest({
   maxChars = 1200,
   spawnImpl = spawnSync,
   timeoutMs = 8000,
+  preferDialog = false,
 } = {}) {
-  if (!paneId) return "";
+  if (!paneId) return { digest: "", dialog: null };
 
   const failures = [];
   for (const source of READ_SOURCES) {
@@ -260,8 +406,14 @@ export function readPaneDigest({
       continue;
     }
 
-    const digest = extractDigest(unwrapPaneOutput(read.stdout), { maxLines: lines, maxChars });
-    if (digest !== "") return digest;
+    const raw = unwrapPaneOutput(read.stdout);
+    const digestOptions = { maxLines: lines, maxChars };
+    const digest = extractDigest(raw, digestOptions);
+    if (preferDialog) {
+      const dialog = extractDialog(raw, digestOptions);
+      if (dialog !== null) return { digest, dialog };
+    }
+    if (digest !== "") return { digest, dialog: null };
     // A successful read that only carried chrome does not stop the fallback.
   }
 
@@ -270,5 +422,5 @@ export function readPaneDigest({
       `[alherdr] could not extract a digest from pane ${paneId}; failed sources: ${failures.join(", ")}`,
     );
   }
-  return "";
+  return { digest: "", dialog: null };
 }
