@@ -10,21 +10,27 @@ Four alert kinds. `blocked` and `done` carry a digest of the agent's own last sc
 
 ```text
 🙋 pi needs your answer
-pi · api-refactor · w1J:p1
+example-repo · feat/example · worktree 2/2
+ws 2 · tab 1 · wA:p1
 ────────────
 Allow the agent to edit src/app.mjs?
 
 ✅ claude finished
-Claude · auth-fix · w2K:p3
+example-repo · feat/example
+ws 1 · tab 1 · wA:p2
 ────────────
 All 68 tests pass. Committed on feat/agent-alerts.
 
 👋 codex left the pane
-codex · w1J:p6
+example-lab
+ws 5 · tab 2 · wA:p3
 
 🏁 pi process exited
-pi · w1J:p1
+example-lab
+ws 1 · tab 1 · wA:p1
 ```
+
+Line 1 is what happened. Line 2 is the place: `repo · branch`, plus `worktree k/n` only when that repository has more than one checkout open in the session; a workspace with no repository shows its label. Line 3 is the addressing: `ws` is the sidebar jump number you press (Herdr groups a repository's worktrees together in the sidebar, which is why it is computed, not read from the workspace's own `number`), `tab` is the tab's index inside its workspace, and the pane id is last. When Herdr gives nothing — no snapshot, a pane that is already gone, a detached or missing git — the alert falls back to the agent, title and pane on a single line and still exits 0. The separator and digest follow only when a digest exists.
 
 ## Requirements
 
@@ -111,7 +117,7 @@ herdr plugin action invoke alherdr.agent-alerts.disable
 herdr plugin action invoke alherdr.agent-alerts.send-test
 ```
 
-Actions run asynchronously: the CLI returns an invocation envelope, and each action's stdout (including `send-test`'s masked credentials and delivery result) lands in the plugin log. Bind the toggle in Herdr's `config.toml`:
+Actions run asynchronously: the CLI returns an invocation envelope, and each action's stdout (including `send-test`'s masked credentials and delivery result) lands in the plugin log. `send-test` resolves the same location lines as a real alert and always sends the fixed test body — never a live pane digest — so it validates credentials and the anatomy without risking a mistaken alarm. Bind the toggle in Herdr's `config.toml`:
 
 ```toml
 # validate with: herdr config check
@@ -126,13 +132,15 @@ description = "Agent Alerts: toggle"
 
 ```text
 herdr event hook
-  └─ node src/notify.mjs     senseEvent() → gate → dedupe → render → send
+  └─ node src/notify.mjs     senseEvent() → gate → dedupe → location → render → send
        ├─ src/config.mjs     .env + environment → one config object
        ├─ src/digest.mjs     herdr agent read → cleaned digest
+       ├─ src/topology.mjs   herdr api snapshot → sidebar order, repo/branch, jump address
        ├─ src/state.mjs      enabled flag and dedupe store in the state dir
        └─ src/telegram.mjs   renderAlert() and sendMessage
 ```
 
+- **The alert location needs topology, not the workspace's `number`.** One `herdr api snapshot` call per alert feeds `src/topology.mjs`: workspaces are ordered the way Herdr's sidebar groups a repository with its linked worktrees, tabs are indexed inside their workspace, and the git branch is resolved from the checkout path (`rev-parse --abbrev-ref HEAD`, short hash when detached). The snapshot call has a timeout and every step degrades to the minimal alert instead of failing the hook.
 - **Structured herdr commands return JSON envelopes; `agent read` returns raw text.** Verified on Herdr 0.9.1: `herdr agent read <pane> --source recent-unwrapped --lines N` writes terminal text to stdout, not JSON. `src/digest.mjs` treats stdout as the payload and unwraps a JSON `{ output }` shape only as a narrow future-proofing case.
 - **The digest needs a chrome filter.** Rendered pane text still carries the sidebar gutter (`▎`), box borders, spinners, telemetry rows, and status phrases like "waiting for input"; without the filter the alert is noise.
 - **Event hooks always exit 0.** Delivery failures are logged to stderr and swallowed, so a bad token or a network outage never disturbs Herdr. `src/actions.mjs` backs the four actions with the same config and transport.
