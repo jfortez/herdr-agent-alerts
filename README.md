@@ -61,6 +61,7 @@ documents the rest.
 | `ALHERDR_ALERT_EXITED` | `1` | Alert when the pane's process ends. |
 | `ALHERDR_DIGEST_LINES` | `24` | Lines read from the pane. |
 | `ALHERDR_DEDUPE_SECONDS` | `30` | Suppress a repeat of the same pane and kind. |
+| `ALHERDR_TELEGRAM_COMMANDS` | `0` | Run the detached poller that answers `/status`, `/help` and `/start` from your phone. |
 | `ALHERDR_DRY_RUN` | `0` | Print the alert instead of sending it. |
 
 Also available: `ALHERDR_DIGEST_MAX_CHARS`, `ALHERDR_ENABLED`, and
@@ -111,6 +112,32 @@ type = "plugin_action"
 command = "alherdr.agent-alerts.toggle"
 description = "Agent Alerts: toggle"
 ```
+
+## Telegram commands (opt-in)
+
+`/status` from your phone returns the same report the `status` action prints,
+without walking back to the machine. It is **off by default**: a plugin should
+not keep a permanent background process listening unless you ask it to. Set
+`ALHERDR_TELEGRAM_COMMANDS=1` in the `.env` from Setup and restart the Herdr
+server (the startup hook is what launches the poller). While it is off, nothing
+is spawned and no process runs.
+
+When it is on, a detached process long-polls `getUpdates` and answers only
+commands from the configured `TELEGRAM_CHAT_ID`:
+
+| Command | Reply |
+| --- | --- |
+| `/status` | The status report: the alerts switch, credentials as set/missing, the poller heartbeat, the waiting list, and the counts. |
+| `/start`, `/help` | One line of usage. |
+| anything else | `Unknown command. Try /status or /help.` |
+
+Messages from any other chat are ignored completely: no reply, not even an
+error, so a stranger who finds the bot cannot query the machine. The poller is
+read-only — it reads one Herdr snapshot and replies; it never sends keys,
+prompts an agent, or changes anything. `status` reports its liveness from the
+heartbeat file. A crashed poller stays down until the next Herdr server start,
+which is what runs the startup hook again; `status` shows `poller stale` or
+`poller off` in the meantime, and `poller running (Ns ago)` when it is alive.
 
 ## Troubleshooting
 

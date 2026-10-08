@@ -1,6 +1,6 @@
 id = "alherdr.agent-alerts"
 name = "Agent Alerts"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.1"
 description = "Alert a detected agent's blocked or done state to Telegram, with a real extract of the agent's own output."
 platforms = ["linux", "macos"]
@@ -20,6 +20,13 @@ command = ["node", "src/notify.mjs"]
 [[events]]
 on = "pane.exited"
 command = ["node", "src/notify.mjs"]
+
+# Spawns the detached Telegram command poller once per server start, and again
+# on live handoff. The script is a no-op unless ALHERDR_TELEGRAM_COMMANDS is on,
+# and it never starts a second poller while one holds the PID file, so a handoff
+# cannot leave two pollers behind.
+[[startup]]
+command = ["bash", "scripts/ensure-poller.sh"]
 
 [[actions]]
 id = "toggle"

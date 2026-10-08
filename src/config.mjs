@@ -116,6 +116,7 @@ export function loadConfig(env = process.env) {
     digestMaxChars: parseNumber(read("ALHERDR_DIGEST_MAX_CHARS"), DEFAULTS.digestMaxChars),
     dedupeSeconds: parseNumber(read("ALHERDR_DEDUPE_SECONDS"), DEFAULTS.dedupeSeconds),
     enabledByDefault: parseBoolean(read("ALHERDR_ENABLED"), true),
+    telegramCommands: parseBoolean(read("ALHERDR_TELEGRAM_COMMANDS"), false),
     dryRun: parseBoolean(read("ALHERDR_DRY_RUN"), false),
     debugDump: trimOrNull(read("ALHERDR_DEBUG_DUMP")),
     configDir,

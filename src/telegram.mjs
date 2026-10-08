@@ -74,7 +74,8 @@ function addressLine(location, alert) {
   return parts.join(" · ");
 }
 
-function escapeHtml(value) {
+/** Escape the three characters Telegram's HTML parse mode treats as markup. */
+export function escapeHtml(value) {
   return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 

@@ -183,3 +183,20 @@ test("prefers HERDR_BIN_PATH over the bare herdr name", () => {
   const { env } = isolatedEnv({ HERDR_BIN_PATH: "/opt/herdr/bin/herdr" });
   assert.equal(loadConfig(env).herdrBin, "/opt/herdr/bin/herdr");
 });
+
+test("ALHERDR_TELEGRAM_COMMANDS defaults off and accepts the boolean vocabulary", () => {
+  const { env, config } = isolatedEnv();
+  assert.equal(loadConfig(env).telegramCommands, false);
+
+  writeFileSync(join(config, ".env"), "ALHERDR_TELEGRAM_COMMANDS=on\n");
+  assert.equal(loadConfig(env).telegramCommands, true);
+  // A real environment variable still wins over the dotenv file.
+  assert.equal(
+    loadConfig({ ...env, ALHERDR_TELEGRAM_COMMANDS: "off" }).telegramCommands,
+    false,
+  );
+  assert.equal(
+    loadConfig({ ...env, ALHERDR_TELEGRAM_COMMANDS: "garbage" }).telegramCommands,
+    false,
+  );
+});
