@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { TEST_DIGEST, buildTestAlert, main, maskChatId, maskToken } from "../src/actions.mjs";
+import { POLLER_HEARTBEAT_FILE } from "../src/report.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -318,3 +319,150 @@ test("an unknown action prints usage and exits 2", () => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /usage: node src\/actions\.mjs/);
 });
+
+// --- status -----------------------------------------------------------------
+
+/** Synthetic identifiers only, mirroring test/report.test.mjs. */
+function statusSnapshot() {
+  const repoRoot = "/repos/example-repo";
+  const linked = "/worktrees/example-repo/feat-example";
+  return {
+    workspaces: [
+      {
+        workspace_id: "wA",
+        label: "[1] example-repo",
+        worktree: {
+          checkout_path: repoRoot,
+          is_linked_worktree: false,
+          repo_name: "example-repo",
+          repo_root: repoRoot,
+        },
+      },
+      {
+        workspace_id: "wB",
+        label: "[2] feat-example",
+        worktree: {
+          checkout_path: linked,
+          is_linked_worktree: true,
+          repo_name: "example-repo",
+          repo_root: repoRoot,
+        },
+      },
+    ],
+    tabs: [
+      { tab_id: "wA:t1", workspace_id: "wA", label: "[1] dev servers" },
+      { tab_id: "wB:t0", workspace_id: "wB", label: "[1] shell" },
+      { tab_id: "wB:t1", workspace_id: "wB", label: "[2] api" },
+    ],
+    panes: [
+      { pane_id: "wA:p1", workspace_id: "wA", tab_id: "wA:t1", cwd: repoRoot },
+      { pane_id: "wA:p2", workspace_id: "wA", tab_id: "wA:t1", cwd: repoRoot },
+      { pane_id: "wB:p3", workspace_id: "wB", tab_id: "wB:t1", cwd: linked },
+      { pane_id: "wB:p4", workspace_id: "wB", tab_id: "wB:t1", cwd: linked },
+      { pane_id: "wB:p5", workspace_id: "wB", tab_id: "wB:t1", cwd: linked },
+    ],
+    agents: [
+      { agent: "pi", agent_status: "blocked", pane_id: "wA:p1" },
+      { agent: "claude", agent_status: "blocked", pane_id: "wB:p3" },
+      { agent: "pi", agent_status: "working", pane_id: "wA:p2" },
+      { agent: "pi", agent_status: "working", pane_id: "wB:p4" },
+      { agent: "claude", agent_status: "working", pane_id: "wB:p5" },
+      { agent: "pi", agent_status: "idle", pane_id: "wA:p2" },
+      { agent: "pi", agent_status: "done", pane_id: "wA:p2" },
+      { agent: "claude", agent_status: "done", pane_id: "wB:p4" },
+    ],
+  };
+}
+
+test("status renders local state and the waiting list from an injected snapshot", async (t) => {
+  const dir = tempDir("actions-status");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const code = await main(["status"], {
+    env: {
+      ...scenarioEnv(dir),
+      TELEGRAM_BOT_TOKEN: "123456:super-secret",
+      TELEGRAM_CHAT_ID: "998877",
+    },
+    snapshot: statusSnapshot(),
+    // Status must never touch the network: a used fetch would throw here.
+    fetchImpl: () => {
+      throw new Error("status must not use the network");
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.equal(
+    writes.join(""),
+    [
+      "alherdr: alerts enabled (default) · token set · chat set · poller off",
+      "2 waiting for you:",
+      "  pi     · wA:p1 · dev servers · ws 1 · tab 1",
+      "  claude · wB:p3 · api         · ws 2 · tab 2",
+      "3 running · 1 idle · 2 done",
+      "",
+    ].join("\n"),
+  );
+  assert.ok(!writes.join("").includes("super-secret"));
+  assert.ok(!writes.join("").includes("998877"));
+});
+
+test("status exits 0 and marks counts unavailable when the snapshot fails", async (t) => {
+  const dir = tempDir("actions-status-fail");
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const code = await main(["status"], {
+    env: {
+      ...scenarioEnv(dir),
+      TELEGRAM_BOT_TOKEN: "123456:super-secret",
+      TELEGRAM_CHAT_ID: "998877",
+    },
+    snapshot: null,
+  });
+
+  assert.equal(code, 0);
+  assert.equal(
+    writes.join(""),
+    [
+      "alherdr: alerts enabled (default) · token set · chat set · poller off",
+      "agent counts unavailable",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("status reports the poller heartbeat as running, then stale", async (t) => {
+  const dir = tempDir("actions-status-poller");
+  const stateDir = join(dir, "state");
+  mkdirSync(stateDir, { recursive: true });
+  const heartbeat = join(stateDir, POLLER_HEARTBEAT_FILE);
+  writeFileSync(heartbeat, "");
+
+  const writes = [];
+  t.mock.method(process.stdout, "write", (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  });
+
+  const env = scenarioEnv(dir);
+  const empty = { workspaces: [], tabs: [], panes: [], agents: [] };
+
+  const now = Date.now() / 1000;
+  utimesSync(heartbeat, now - 5, now - 5);
+  assert.equal(await main(["status"], { env, snapshot: empty }), 0);
+  assert.match(writes.join(""), / · poller running \(\d+s ago\)\n/);
+
+  writes.length = 0;
+  utimesSync(heartbeat, now - 300, now - 300);
+  assert.equal(await main(["status"], { env, snapshot: empty }), 0);
+  assert.match(writes.join(""), / · poller stale \(\d+s ago\)\n/);
+});
+

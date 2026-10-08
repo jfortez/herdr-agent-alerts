@@ -17,16 +17,26 @@ function ensureStateDir(cfg) {
   mkdirSync(cfg.stateDir, { recursive: true });
 }
 
-/** Missing or unreadable enabled file falls back to `cfg.enabledByDefault`. */
-export function isEnabled(cfg) {
+/**
+ * The enabled switch plus whether the default decided it. `defaulted` is true
+ * when the file is missing, unreadable or unparseable, so the status report
+ * can say that `ALHERDR_ENABLED` supplied the value instead of the state file.
+ */
+export function readEnabledState(cfg) {
   let raw;
   try {
     raw = readFileSync(enabledFile(cfg), "utf8");
   } catch {
-    return Boolean(cfg.enabledByDefault);
+    return { enabled: Boolean(cfg.enabledByDefault), defaulted: true };
   }
   const parsed = parseBoolean(raw, null);
-  return parsed === null ? Boolean(cfg.enabledByDefault) : parsed;
+  if (parsed === null) return { enabled: Boolean(cfg.enabledByDefault), defaulted: true };
+  return { enabled: parsed, defaulted: false };
+}
+
+/** Missing or unreadable enabled file falls back to `cfg.enabledByDefault`. */
+export function isEnabled(cfg) {
+  return readEnabledState(cfg).enabled;
 }
 
 export function setEnabled(cfg, value) {

@@ -1,7 +1,10 @@
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "./config.mjs";
-import { isEnabled, readState, setEnabled } from "./state.mjs";
+import { POLLER_HEARTBEAT_FILE, pollerStatus, renderReport, summarizeSnapshot } from "./report.mjs";
+import { isEnabled, readEnabledState, readState, setEnabled } from "./state.mjs";
 import { firstString, stringFrom } from "./strings.mjs";
 import { renderAlert, sendTelegram } from "./telegram.mjs";
 import { defaultCheckoutProbe, readSnapshot, resolveLocation } from "./topology.mjs";
@@ -170,6 +173,44 @@ function printEnabled(cfg, enabled) {
   );
 }
 
+/**
+ * Read the detached poller's heartbeat file, if the later change has created
+ * one yet. The file's mtime is the beat; see `POLLER_HEARTBEAT_FILE` in
+ * report.mjs for the file name and stale threshold. An unreadable or absent
+ * file is `off`, never an error.
+ */
+export function readPoller(cfg, now = Date.now()) {
+  try {
+    const { mtimeMs } = statSync(join(cfg.stateDir, POLLER_HEARTBEAT_FILE));
+    return pollerStatus({ atMs: mtimeMs, nowMs: now });
+  } catch {
+    return { state: "off", ageMs: null };
+  }
+}
+
+/**
+ * The status action's whole report, from local state plus one snapshot call.
+ * `snapshot` is the test seam; passing `null` means "the snapshot failed" and
+ * renders the unavailable line instead of counts. Never throws on a failed
+ * snapshot and never touches the network.
+ */
+export function buildStatusReport(cfg, { snapshot, spawnImpl, now } = {}) {
+  const currentSnapshot =
+    snapshot !== undefined
+      ? snapshot
+      : readSnapshot({ herdrBin: cfg.herdrBin, spawnImpl: spawnImpl ?? undefined });
+  const alerts = readEnabledState(cfg);
+
+  return renderReport({
+    enabled: alerts.enabled,
+    defaulted: alerts.defaulted,
+    token: cfg.token,
+    chatId: cfg.chatId,
+    poller: readPoller(cfg, now),
+    summary: summarizeSnapshot(currentSnapshot),
+  });
+}
+
 export async function main(
   argv = process.argv.slice(2),
   { env = process.env, fetchImpl = fetch, sleepImpl, spawnImpl, snapshot, checkoutProbe } = {},
@@ -194,10 +235,13 @@ export async function main(
       printEnabled(cfg, false);
       return 0;
     }
+    case "status":
+      process.stdout.write(buildStatusReport(cfg, { snapshot, spawnImpl }) + "\n");
+      return 0;
     case "send-test":
       return sendTest(cfg, env, { fetchImpl, sleepImpl, spawnImpl, snapshot, checkoutProbe });
     default:
-      console.error("usage: node src/actions.mjs <toggle|enable|disable|send-test>");
+      console.error("usage: node src/actions.mjs <toggle|enable|disable|send-test|status>");
       return 2;
   }
 }

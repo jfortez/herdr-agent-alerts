@@ -45,6 +45,14 @@ title = "Agent Alerts: send a test alert"
 contexts = ["global"]
 command = ["node", "src/actions.mjs", "send-test"]
 
+# Reports the switch, whether credentials are set, the poller heartbeat and
+# who is waiting. Sends nothing: checking the switch must never alert.
+[[actions]]
+id = "status"
+title = "Agent Alerts: show status"
+contexts = ["global"]
+command = ["node", "src/actions.mjs", "status"]
+
 # The setup wizard, runnable straight from the Herdr CLI:
 #   herdr plugin pane open --plugin alherdr.agent-alerts --entrypoint setup
 #

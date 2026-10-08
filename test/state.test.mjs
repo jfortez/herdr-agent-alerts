@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 
-import { isEnabled, readState, setEnabled, shouldNotify } from "../src/state.mjs";
+import { isEnabled, readEnabledState, readState, setEnabled, shouldNotify } from "../src/state.mjs";
 
 const dirs = [];
 function tempDir(label) {
@@ -83,4 +83,15 @@ test("readState reports the enabled flag and the state dir", () => {
   const snapshot = readState(cfg);
   assert.equal(snapshot.enabled, false);
   assert.equal(snapshot.stateDir, cfg.stateDir);
+});
+
+test("readEnabledState reports when the default supplied the value", () => {
+  const cfg = makeCfg({ enabledByDefault: false });
+  assert.deepEqual(readEnabledState(cfg), { enabled: false, defaulted: true });
+
+  setEnabled(cfg, true);
+  assert.deepEqual(readEnabledState(cfg), { enabled: true, defaulted: false });
+
+  writeFileSync(join(cfg.stateDir, "enabled"), "banana");
+  assert.deepEqual(readEnabledState(cfg), { enabled: false, defaulted: true });
 });

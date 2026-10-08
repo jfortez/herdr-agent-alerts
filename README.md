@@ -88,12 +88,21 @@ settles back to `idle` or `done`, which is why `idle` is off by default.
 ```bash
 herdr plugin action invoke alherdr.agent-alerts.toggle
 herdr plugin action invoke alherdr.agent-alerts.send-test
+herdr plugin action invoke alherdr.agent-alerts.status
 ```
 
-Also `enable`, `disable`. `send-test` sends the fixed test body with a real
-location, so you can check credentials and the message format without risking a
-false alarm. Actions run in the background and their output lands in the plugin
-log. To bind the toggle:
+Also `enable`, `disable`. `status` prints a compact report of the plugin's own
+state plus what the agents are doing: whether alerts are on — and whether
+`ALHERDR_ENABLED` decided that because no state file exists yet — whether the
+token and chat id are set (never their values), the detached Telegram poller's
+heartbeat when one exists, and the waiting list. The waiting list is the "who
+needs me" view: one aligned line per blocked agent with the tab name, `ws`,
+`tab` and pane id to jump to, or `nothing waiting for you`. It sends nothing, so
+checking the switch can never trigger an alert, and it still prints the local
+state when the Herdr snapshot is unavailable. `send-test` sends the fixed test
+body with a real location, so you can check credentials and the message format
+without risking a false alarm. Actions run in the background and their output
+lands in the plugin log. To bind the toggle:
 
 ```toml
 [[keys.command]]
