@@ -31,25 +31,20 @@ Requires Herdr with plugin support (0.9.1+) and Node 22+ (LTS).
 
 ## Setup
 
-The wizard ships inside the plugin, which Herdr installs into its own directory,
-so point at it first:
+Run the wizard from the Herdr CLI. It opens as a popup with a real terminal:
 
 ```bash
-ROOT="$(herdr plugin list --plugin alherdr.agent-alerts --json | jq -r '.result.plugins[0].plugin_root')"
-bash "$ROOT/scripts/wizard.sh"
+herdr plugin pane open --plugin alherdr.agent-alerts --entrypoint setup
 ```
 
-The wizard walks five steps: it opens BotFather, checks the token, finds your chat
-id, writes the credentials to the plugin config directory with `chmod 600`, and
-sends a live test message. Re-run it whenever you change credentials. It needs
-`curl` and `jq`.
+It walks five steps: it opens BotFather, checks the token, finds your chat id,
+writes the credentials to the plugin config directory with `chmod 600`, and sends
+a live test message. Re-run it whenever you change credentials. It needs `curl`
+and `jq`.
 
-To configure by hand instead:
-
-```bash
-cp "$ROOT/env.example" "$(herdr plugin config-dir alherdr.agent-alerts)/.env"
-$EDITOR "$(herdr plugin config-dir alherdr.agent-alerts)/.env"
-```
+To configure by hand instead, create `.env` in
+`$(herdr plugin config-dir alherdr.agent-alerts)` with `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` set. `env.example`, in the plugin root, lists the rest.
 
 ## Configure
 

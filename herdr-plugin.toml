@@ -1,6 +1,6 @@
 id = "alherdr.agent-alerts"
 name = "Agent Alerts"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.1"
 description = "Alert a detected agent's blocked or done state to Telegram, with a real extract of the agent's own output."
 platforms = ["linux", "macos"]
@@ -44,3 +44,22 @@ id = "send-test"
 title = "Agent Alerts: send a test alert"
 contexts = ["global"]
 command = ["node", "src/actions.mjs", "send-test"]
+
+# The setup wizard, runnable straight from the Herdr CLI:
+#   herdr plugin pane open --plugin alherdr.agent-alerts --entrypoint setup
+#
+# A pane rather than an action, because an action has no terminal at all: stdin,
+# stdout and stderr are every one of them captured, so an interactive wizard would
+# fail at its first prompt. A pane is measured to give a terminal on stdin and
+# stderr, and Herdr renders both streams, so the wizard's prompts and output work.
+# One cosmetic caveat, measured and not yet worked around: Herdr keeps stdout on a
+# pipe even if the command redirects it, so the wizard's own "is stdout a terminal"
+# checks see false. It therefore runs without colour and without clearing between
+# stages, which makes the five steps scroll instead of replace.
+[[panes]]
+id = "setup"
+title = "Agent Alerts setup"
+placement = "popup"
+width = "80%"
+height = "80%"
+command = ["bash", "scripts/wizard.sh"]
