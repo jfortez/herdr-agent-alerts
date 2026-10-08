@@ -27,12 +27,16 @@ herdr plugin install jfortez/herdr-agent-alerts
 
 Working on the plugin itself instead: `cd /path/to/herdr-agent-alerts && herdr plugin link .`
 
-Requires Herdr with plugin support (0.9.1+) and Node 18+.
+Requires Herdr with plugin support (0.9.1+) and Node 22+ (LTS).
 
 ## Setup
 
+The wizard ships inside the plugin, which Herdr installs into its own directory,
+so point at it first:
+
 ```bash
-bash scripts/wizard.sh
+ROOT="$(herdr plugin list --plugin alherdr.agent-alerts --json | jq -r '.result.plugins[0].plugin_root')"
+bash "$ROOT/scripts/wizard.sh"
 ```
 
 The wizard walks five steps: it opens BotFather, checks the token, finds your chat
@@ -40,9 +44,12 @@ id, writes the credentials to the plugin config directory with `chmod 600`, and
 sends a live test message. Re-run it whenever you change credentials. It needs
 `curl` and `jq`.
 
-To configure by hand instead, copy `env.example` to
-`$(herdr plugin config-dir alherdr.agent-alerts)/.env` and fill in the two
-required keys.
+To configure by hand instead:
+
+```bash
+cp "$ROOT/env.example" "$(herdr plugin config-dir alherdr.agent-alerts)/.env"
+$EDITOR "$(herdr plugin config-dir alherdr.agent-alerts)/.env"
+```
 
 ## Configure
 
@@ -138,10 +145,14 @@ Telegram chat. Credentials live only in the plugin config `.env`, at mode 600, a
 
 ## Development
 
-`node --test` runs the suite. Tests need Node 18.13+; the runtime code is Node
-18-safe, and pane fixtures live in `test/fixtures/`. One thing worth knowing before
-editing the digest: structured `herdr` commands return JSON, but
-`herdr agent read` writes raw terminal text to stdout.
+`node --test` runs the suite. Tests need Node 22+ (LTS); the runtime avoids
+anything newer than Node 18, but only 22+ is tested. Pane fixtures live in
+`test/fixtures/`. One thing worth knowing before editing the digest: structured
+`herdr` commands return JSON, but `herdr agent read` writes raw terminal text to
+stdout.
+
+A GitHub install runs from a managed copy, so local edits do nothing until you
+`herdr plugin uninstall alherdr.agent-alerts` and `herdr plugin link .` instead.
 
 ## License
 
