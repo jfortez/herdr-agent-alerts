@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Spawn the detached Telegram command poller, once.
+# Spawn the detached Telegram poller supervisor, once.
 #
 # Herdr runs the [[startup]] hook on server start and again on live handoff, so
 # this script has to be idempotent: it exits immediately when
-# ALHERDR_TELEGRAM_COMMANDS is off, and exits while a live poller already holds
-# the PID file. It never prints to stdout; the poller's own output is what goes
-# to the log file.
+# ALHERDR_TELEGRAM_COMMANDS is off. Ownership of "exactly one poller" lives in
+# the poller itself, which claims the `telegram-poller.lock/pid` file
+# atomically with O_CREAT|O_EXCL (see src/poller.mjs); this script never writes
+# the lock or its pid. The liveness read below is only a cheap optimisation to
+# skip the spawn;
+# even when it races, a duplicate poller loses the claim and exits 0, and its
+# supervisor exits with it. It never prints to stdout; the supervisor's and
+# poller's output is what goes to the log file.
 #
 # File names must stay in step with src/poller.mjs.
 set -u
@@ -15,11 +20,9 @@ ROOT="${HERDR_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 CONFIG_DIR="${HERDR_PLUGIN_CONFIG_DIR:-$ROOT}"
 STATE_DIR="${HERDR_PLUGIN_STATE_DIR:-$ROOT/state}"
 
-PID_FILE="$STATE_DIR/telegram-poller.pid"
+LOCK_PID_FILE="$STATE_DIR/telegram-poller.lock/pid"
 LOG_FILE="$STATE_DIR/telegram-poller.log"
-
-NODE_BIN="${ALHERDR_POLLER_NODE:-node}"
-POLLER_ENTRY="${ALHERDR_POLLER_ENTRY:-$ROOT/src/poller.mjs}"
+SUPERVISOR="$SCRIPT_DIR/run-poller.sh"
 
 # Read KEY from a dotenv file, last assignment wins. Mirrors the subset of
 # src/config.mjs that this decision needs: `export ` prefixes, single or double
@@ -51,9 +54,11 @@ case "$(printf '%s' "$commands" | tr '[:upper:]' '[:lower:]')" in
   *) exit 0 ;;
 esac
 
+# Cheap pre-check only: the poller owns the lock, and a stale one is cleaned up
+# by the new poller itself.
 pid=""
-if [ -f "$PID_FILE" ]; then
-  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+if [ -f "$LOCK_PID_FILE" ]; then
+  pid="$(cat "$LOCK_PID_FILE" 2>/dev/null || true)"
 fi
 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
   exit 0
@@ -62,9 +67,8 @@ fi
 mkdir -p "$STATE_DIR"
 
 if command -v setsid >/dev/null 2>&1; then
-  setsid "$NODE_BIN" "$POLLER_ENTRY" >>"$LOG_FILE" 2>&1 </dev/null &
+  setsid bash "$SUPERVISOR" >>"$LOG_FILE" 2>&1 </dev/null &
 else
-  nohup "$NODE_BIN" "$POLLER_ENTRY" >>"$LOG_FILE" 2>&1 </dev/null &
+  nohup bash "$SUPERVISOR" >>"$LOG_FILE" 2>&1 </dev/null &
 fi
-child=$!
-printf '%s\n' "$child" > "$PID_FILE"
+exit 0

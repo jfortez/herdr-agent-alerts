@@ -135,9 +135,22 @@ Messages from any other chat are ignored completely: no reply, not even an
 error, so a stranger who finds the bot cannot query the machine. The poller is
 read-only — it reads one Herdr snapshot and replies; it never sends keys,
 prompts an agent, or changes anything. `status` reports its liveness from the
-heartbeat file. A crashed poller stays down until the next Herdr server start,
-which is what runs the startup hook again; `status` shows `poller stale` or
-`poller off` in the meantime, and `poller running (Ns ago)` when it is alive.
+heartbeat file: `poller running (Ns ago)` when it is alive, and `poller stale`
+or `poller off` while it is down.
+
+The poller runs under a small detached supervisor. If the poller exits with an
+unexpected error, the supervisor waits a few seconds and starts it again, so a
+crash recovers without touching Herdr. What still needs a Herdr server start is
+the first launch: `ALHERDR_TELEGRAM_COMMANDS=1` only takes effect when the
+server start runs the startup hook, and turning it off stops the next launch
+rather than an already-running poller. `TERM` or `INT` to the supervisor, or to
+the poller, stops both and nothing restarts them until the next server start. A
+poller killed outright (`SIGKILL`) is treated as a crash and restarted, and
+every start re-reads the `.env`, so that restart also picks up an edited token
+or chat id. If a reply cannot be delivered, the poller holds the offset at that
+update so Telegram redelivers it on the next poll, and after three failed
+attempts it logs that the update is abandoned and moves on rather than looping
+forever.
 
 ## Troubleshooting
 

@@ -15,13 +15,21 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(REPO_ROOT, "scripts", "ensure-poller.sh");
-const PID_FILE_NAME = "telegram-poller.pid";
+const LOCK_DIR_NAME = "telegram-poller.lock";
+// The lock directory, never written by ensure-poller.sh itself.
+const LOCK_PID_PATH = [LOCK_DIR_NAME, "pid"];
 
-// Synthetic stub only; the tests never talk to Telegram.
-
+// Synthetic stub only; the tests never talk to Telegram. It mimics the
+// poller's side of the contract: claim the lock, then run. SIGTERM exits 0 so
+// the supervisor stops instead of restarting it and leaking past the test.
 const STUB_SOURCE = [
-  'import { appendFileSync } from "node:fs";',
+  'import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";',
+  'import { join } from "node:path";',
+  "const lockDir = join(process.env.HERDR_PLUGIN_STATE_DIR, \"telegram-poller.lock\");",
+  "mkdirSync(lockDir, { recursive: true });",
+  'writeFileSync(join(lockDir, "pid"), `${process.pid}\\n`);',
   "appendFileSync(process.env.STUB_MARKER, `${process.pid}\\n`);",
+  'process.on("SIGTERM", () => process.exit(0));',
   "setInterval(() => {}, 60000);",
 ].join("\n");
 
@@ -114,7 +122,7 @@ test("ensure-poller exits without spawning when ALHERDR_TELEGRAM_COMMANDS is off
 
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!existsSync(box.marker));
-  assert.ok(!existsSync(join(box.stateDir, PID_FILE_NAME)));
+  assert.ok(!existsSync(join(box.stateDir, LOCK_DIR_NAME)));
 });
 
 test("ensure-poller reads the dotenv file, defaults to off there too", () => {
@@ -124,25 +132,25 @@ test("ensure-poller reads the dotenv file, defaults to off there too", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!existsSync(box.marker));
-  assert.ok(!existsSync(join(box.stateDir, PID_FILE_NAME)));
+  assert.ok(!existsSync(join(box.stateDir, LOCK_DIR_NAME)));
 });
 
-test("ensure-poller does not spawn while a live process holds the PID file", () => {
+test("ensure-poller does not spawn while a live process holds the lock", () => {
   const box = scenario("ensure-live");
-  mkdirSync(box.stateDir, { recursive: true });
-  const pidFile = join(box.stateDir, PID_FILE_NAME);
-  writeFileSync(pidFile, `${process.pid}\n`);
+  const lockPid = join(box.stateDir, ...LOCK_PID_PATH);
+  mkdirSync(join(box.stateDir, LOCK_DIR_NAME), { recursive: true });
+  writeFileSync(lockPid, `${process.pid}\n`);
 
-  // The dotenv says on; the live PID file must still win.
+  // The dotenv says on; the live lock must still win.
   writeFileSync(join(box.configDir, ".env"), "ALHERDR_TELEGRAM_COMMANDS=1\n");
   const result = runEnsure(box);
 
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!existsSync(box.marker));
-  assert.equal(readFileSync(pidFile, "utf8").trim(), String(process.pid));
+  assert.equal(readFileSync(lockPid, "utf8").trim(), String(process.pid));
 });
 
-test("ensure-poller spawns a detached poller once and records its PID", async () => {
+test("ensure-poller spawns the supervisor once and the poller records its pid", async () => {
   const box = scenario("ensure-spawn");
   writeFileSync(join(box.configDir, ".env"), "ALHERDR_TELEGRAM_COMMANDS=on\n");
 
@@ -150,29 +158,31 @@ test("ensure-poller spawns a detached poller once and records its PID", async ()
   assert.equal(first.status, 0, first.stderr);
   await waitFor(() => readMarker(box.marker).length === 1);
 
-  const pidFile = join(box.stateDir, PID_FILE_NAME);
+  const lockPid = join(box.stateDir, ...LOCK_PID_PATH);
   const firstPids = readMarker(box.marker);
   spawnedPids.push(...firstPids);
-  assert.equal(readFileSync(pidFile, "utf8").trim(), String(firstPids[0]));
+  assert.equal(readFileSync(lockPid, "utf8").trim(), String(firstPids[0]));
   assert.ok(isAlive(firstPids[0]), "the detached poller should be alive");
+  // The old ensure-owned PID file is gone for good.
+  assert.ok(!existsSync(join(box.stateDir, "telegram-poller.pid")));
 
   // The startup hook runs again on live handoff: it must not start a second poller.
   const second = runEnsure(box);
   assert.equal(second.status, 0, second.stderr);
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.deepEqual(readMarker(box.marker), firstPids);
-  assert.equal(readFileSync(pidFile, "utf8").trim(), String(firstPids[0]));
+  assert.equal(readFileSync(lockPid, "utf8").trim(), String(firstPids[0]));
 });
 
-test("ensure-poller replaces a stale PID file and records the new process", async () => {
+test("ensure-poller starts despite a stale lock and the poller replaces it", async () => {
   const box = scenario("ensure-stale");
   writeFileSync(join(box.configDir, ".env"), "ALHERDR_TELEGRAM_COMMANDS=1\n");
-  mkdirSync(box.stateDir, { recursive: true });
+  mkdirSync(join(box.stateDir, LOCK_DIR_NAME), { recursive: true });
 
   // A process that has already exited: its PID cannot be recycled this fast.
   const dead = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });
-  const pidFile = join(box.stateDir, PID_FILE_NAME);
-  writeFileSync(pidFile, `${dead.pid}\n`);
+  const lockPid = join(box.stateDir, ...LOCK_PID_PATH);
+  writeFileSync(lockPid, `${dead.pid}\n`);
 
   const result = runEnsure(box);
   assert.equal(result.status, 0, result.stderr);
@@ -180,6 +190,6 @@ test("ensure-poller replaces a stale PID file and records the new process", asyn
 
   const [pid] = readMarker(box.marker);
   spawnedPids.push(pid);
-  assert.equal(readFileSync(pidFile, "utf8").trim(), String(pid));
+  assert.equal(readFileSync(lockPid, "utf8").trim(), String(pid));
   assert.notEqual(pid, dead.pid);
 });

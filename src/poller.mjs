@@ -4,9 +4,10 @@
  * Herdr plugin hooks are event-driven: a command runs, does its job and dies.
  * Answering an inbound `/status` needs something listening, so this module is a
  * long-polling process that `scripts/ensure-poller.sh` spawns detached from the
- * `[[startup]]` hook. It is strictly read-only: it reads one `herdr api
- * snapshot` for `/status` and sends a reply. It never sends keys, prompts an
- * agent, or mutates anything.
+ * `[[startup]]` hook, under `scripts/run-poller.sh` so an unexpected exit is
+ * restarted. It is strictly read-only: it reads one `herdr api snapshot` for
+ * `/status` and sends a reply. It never sends keys, prompts an agent, or
+ * mutates anything.
  *
  * Hard security boundary: only updates whose chat is the configured
  * `TELEGRAM_CHAT_ID` are answered. Every other chat is ignored entirely — no
@@ -17,10 +18,15 @@
  * heartbeat contract lives in report.mjs (`POLLER_HEARTBEAT_FILE`,
  * `POLLER_STALE_MS`): a beat is written after every poll cycle, so the status
  * action reports `running` while a cycle can take at most ~45 s + backoff.
+ *
+ * Exit code contract for the supervisor: 0 is a deliberate stop (a signal,
+ * `ALHERDR_TELEGRAM_COMMANDS` off, missing credentials, or losing the claim
+ * race); non-zero is reserved for an unexpected fatal error.
  */
 import {
   mkdirSync,
   readFileSync,
+  rmdirSync,
   statSync,
   truncateSync,
   unlinkSync,
@@ -35,9 +41,13 @@ import { POLLER_HEARTBEAT_FILE } from "./report.mjs";
 import { MAX_MESSAGE_CHARS, escapeHtml, sendTelegram } from "./telegram.mjs";
 
 /** Files the poller owns in the state dir. Kept in step with ensure-poller.sh. */
-export const POLLER_PID_FILE = "telegram-poller.pid";
+export const POLLER_LOCK_DIR = "telegram-poller.lock";
+export const POLLER_LOCK_PID_FILE = "pid";
 export const POLLER_OFFSET_FILE = "telegram-poller.offset";
 export const POLLER_LOG_FILE = "telegram-poller.log";
+
+/** A permanently undeliverable reply is retried this many polls, then left. */
+export const MAX_UPDATE_ATTEMPTS = 3;
 
 export const LONG_POLL_SECONDS = 30;
 export const FETCH_TIMEOUT_MS = 45_000;
@@ -96,8 +106,12 @@ export function maybeTruncateLog(cfg) {
   }
 }
 
-function pidFilePath(cfg) {
-  return statePath(cfg, POLLER_PID_FILE);
+function lockDirPath(cfg) {
+  return statePath(cfg, POLLER_LOCK_DIR);
+}
+
+function lockPidPath(cfg) {
+  return join(lockDirPath(cfg), POLLER_LOCK_PID_FILE);
 }
 
 function isProcessAlive(pid) {
@@ -112,29 +126,89 @@ function isProcessAlive(pid) {
 }
 
 /**
- * Take the PID file unless a live process already holds it. A stale file (its
- * PID is gone) is overwritten; the caller owns the file after `true`.
+ * Filesystem seam for the claim, so tests can interleave a competing claim
+ * between our mkdir and our pid write.
  */
-export function claimPidFile(cfg, { pid = process.pid, alive = isProcessAlive } = {}) {
-  let holder = null;
+const defaultLockFs = { mkdirSync, readFileSync, unlinkSync, writeFileSync };
+
+/** The pid inside the lock directory, or null when it cannot be read. */
+function readLockHolder(cfg, fs = defaultLockFs) {
   try {
-    holder = readFileSync(pidFilePath(cfg), "utf8").trim();
+    const value = Number.parseInt(fs.readFileSync(lockPidPath(cfg), "utf8").trim(), 10);
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
   } catch {
-    holder = null;
+    return null;
   }
-  if (holder !== null && holder !== "" && holder !== String(pid)) {
-    if (alive(Number.parseInt(holder, 10))) return false;
-  }
-  mkdirSync(cfg.stateDir, { recursive: true });
-  writeFileSync(pidFilePath(cfg), `${pid}\n`);
-  return true;
 }
 
-/** Remove the PID file only when it still names us; never fight over it. */
-export function releasePidFile(cfg, { pid = process.pid } = {}) {
+/**
+ * Create the claim: the directory first, then the pid file inside it with
+ * `wx` (O_CREAT|O_EXCL). The pid file is the real mutex, not the directory,
+ * so the empty window between the two steps cannot be mistaken for a stale
+ * lock: only one process can create the pid file, and the loser of that race
+ * reads a pid that is not its own and stands down.
+ *
+ * @returns "claimed" | "exists" | "lost"
+ */
+function tryCreateLock(cfg, pid, fs) {
   try {
-    if (readFileSync(pidFilePath(cfg), "utf8").trim() !== String(pid)) return false;
-    unlinkSync(pidFilePath(cfg));
+    fs.mkdirSync(lockDirPath(cfg));
+  } catch (err) {
+    if (err?.code !== "EEXIST") throw err;
+  }
+  try {
+    fs.writeFileSync(lockPidPath(cfg), `${pid}\n`, { flag: "wx" });
+  } catch (err) {
+    if (err?.code === "EEXIST") return "exists";
+    return "lost";
+  }
+  // If another poller removed and recreated the lock between our create and
+  // this read, the pid file no longer names us: stand down.
+  return readLockHolder(cfg, fs) === pid ? "claimed" : "lost";
+}
+
+/**
+ * Claim the poller lock. The pid file inside the lock directory is created
+ * with O_CREAT|O_EXCL, so two concurrent pollers can never both win, even in
+ * the window between a poller's `mkdirSync` and its pid write. A lock whose
+ * holder is gone is removed and the claim retried once, then abandoned to
+ * avoid a livelock.
+ */
+export function claimLock(
+  cfg,
+  { pid = process.pid, alive = isProcessAlive, log = consoleLog, fs = defaultLockFs } = {},
+) {
+  fs.mkdirSync(cfg.stateDir, { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = tryCreateLock(cfg, pid, fs);
+    if (result === "claimed") return true;
+    if (result === "lost") return false;
+
+    const holder = readLockHolder(cfg, fs);
+    if (holder !== null && alive(holder)) {
+      log(`another poller holds the lock (pid ${holder}); exiting`);
+      return false;
+    }
+    // Stale: a dead holder, or a pid file with no usable pid. Only evict the
+    // pid this branch observed, so a holder that has just claimed is never
+    // evicted by a stale read.
+    try {
+      if (readLockHolder(cfg, fs) === holder) fs.unlinkSync(lockPidPath(cfg));
+      rmdirSync(lockDirPath(cfg));
+    } catch {
+      // Another process cleaned up or claimed first; the retry re-evaluates.
+    }
+  }
+  log("lost the poller lock race; exiting");
+  return false;
+}
+
+/** Release the lock only while it still names us; never evict another poller. */
+export function releaseLock(cfg, { pid = process.pid } = {}) {
+  if (readLockHolder(cfg) !== pid) return false;
+  try {
+    unlinkSync(lockPidPath(cfg));
+    rmdirSync(lockDirPath(cfg));
     return true;
   } catch {
     return false;
@@ -142,16 +216,12 @@ export function releasePidFile(cfg, { pid = process.pid } = {}) {
 }
 
 /**
- * True when some other process has taken the PID file. A missing file is not
- * a takeover: the loop keeps running so a manual cleanup cannot kill it.
+ * True when some other process has taken the lock. A missing lock is not a
+ * takeover: the loop keeps running so a manual cleanup cannot kill it.
  */
-function pidFileNamesOther(cfg, pid) {
-  try {
-    const holder = readFileSync(pidFilePath(cfg), "utf8").trim();
-    return holder !== "" && holder !== String(pid);
-  } catch {
-    return false;
-  }
+function lockNamesOther(cfg, pid) {
+  const holder = readLockHolder(cfg);
+  return holder !== null && holder !== pid;
 }
 
 /**
@@ -312,7 +382,11 @@ export async function handleUpdate(update, { cfg, fetchImpl, sleepImpl, spawnImp
     fetchImpl,
     sleepImpl,
   });
-  log(`replied /${command}: ${result.ok ? "ok" : `failed with status ${result.status}`}`);
+  if (!result.ok) {
+    log(`replied /${command}: failed with status ${result.status}`);
+    throw new Error(`sendMessage failed with status ${result.status}`);
+  }
+  log(`replied /${command}: ok`);
   return "replied";
 }
 
@@ -320,7 +394,13 @@ export async function handleUpdate(update, { cfg, fetchImpl, sleepImpl, spawnImp
  * The poll loop. One cycle is one `getUpdates` long poll (< 30 s) plus the
  * handling of its updates and the heartbeat beat; a failed cycle logs and
  * sleeps for a bounded backoff. Resolves only when stopped: `signal` aborts,
- * `maxCycles` (tests) is reached, or another process has claimed the PID file.
+ * `maxCycles` (tests) is reached, or another process has claimed the lock.
+ *
+ * At-least-once for commands: the offset only commits past updates that were
+ * handled (replied, deliberately skipped or ignored). A failed reply stops
+ * the batch without committing, so the next poll redelivers it; after
+ * MAX_UPDATE_ATTEMPTS the update is abandoned and the offset commits past it
+ * so a permanent failure cannot spin forever.
  */
 export async function runPoller({
   cfg,
@@ -336,15 +416,18 @@ export async function runPoller({
   let cycles = 0;
   let failures = 0;
   let reason = "max-cycles";
+  // Failed delivery attempts per update id, surviving across polls because the
+  // offset does not commit past a failed update.
+  const attemptsByUpdate = new Map();
 
   while (cycles < maxCycles) {
     if (signal?.aborted) {
       reason = "aborted";
       break;
     }
-    if (pidFileNamesOther(cfg, pid)) {
-      log("the PID file no longer names this process; exiting");
-      reason = "pid-lost";
+    if (lockNamesOther(cfg, pid)) {
+      log("the poller lock no longer names this process; exiting");
+      reason = "lock-lost";
       break;
     }
     cycles += 1;
@@ -359,13 +442,27 @@ export async function runPoller({
         let next = offset;
         for (const update of response.payload.result) {
           const updateId = Number(update?.update_id);
-          if (Number.isSafeInteger(updateId) && updateId >= next) next = updateId + 1;
+          const validId = Number.isSafeInteger(updateId);
+          const attemptKey = validId ? updateId : String(update?.update_id);
           try {
             await handleUpdate(update, { cfg, fetchImpl, sleepImpl, spawnImpl, now, log });
+            attemptsByUpdate.delete(attemptKey);
           } catch (err) {
-            // One undeliverable reply must not stop the batch or replay the rest.
-            log(`could not answer an update: ${describeError(err)}`);
+            const attempts = (attemptsByUpdate.get(attemptKey) ?? 0) + 1;
+            attemptsByUpdate.set(attemptKey, attempts);
+            log(
+              `could not answer update ${attemptKey}: ${describeError(err)} ` +
+                `(attempt ${attempts}/${MAX_UPDATE_ATTEMPTS})`,
+            );
+            if (attempts < MAX_UPDATE_ATTEMPTS) {
+              // Stop here: the offset must not move past an unanswered update,
+              // so the next poll redelivers it and the rest of the batch.
+              break;
+            }
+            log(`abandoning update ${attemptKey} after ${attempts} failed attempts`);
+            attemptsByUpdate.delete(attemptKey);
           }
+          if (validId && updateId >= next) next = updateId + 1;
         }
         if (next !== offset) writeOffset(cfg, next);
         failures = 0;
@@ -393,9 +490,13 @@ export async function runPoller({
 }
 
 /**
- * The detached process entrypoint. Refuses to run when the responder is off or
- * the credentials are missing, claims the PID file, and releases it again on
+ * The detached process entrypoint. Refuses to run when the responder is off
+ * or the credentials are missing, claims the lock, and releases it again on
  * SIGTERM/SIGINT or a normal stop.
+ *
+ * Exit codes: 0 for any deliberate refusal or stop (flag off, missing
+ * credentials, lock held, signal, max cycles); 1 only for an unexpected fatal
+ * error, so the supervisor in scripts/run-poller.sh restarts exactly those.
  */
 export async function main({
   env = process.env,
@@ -410,13 +511,12 @@ export async function main({
   const cfg = cfgOverride ?? loadConfig(env);
   if (!cfg.telegramCommands) return 0;
   if (!cfg.token || !cfg.chatId) {
-    log("telegram commands are enabled but TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing; exiting");
-    return 1;
-  }
-  if (!claimPidFile(cfg)) {
-    log("another poller already holds the PID file; exiting");
+    log(
+      "telegram commands are enabled but TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing; exiting",
+    );
     return 0;
   }
+  if (!claimLock(cfg, { log })) return 0;
 
   const controller = new AbortController();
   const stop = () => controller.abort();
@@ -441,7 +541,7 @@ export async function main({
   } finally {
     process.removeListener("SIGTERM", stop);
     process.removeListener("SIGINT", stop);
-    releasePidFile(cfg);
+    releaseLock(cfg);
   }
 }
 
